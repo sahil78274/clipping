@@ -10,6 +10,7 @@
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@ffprobe-installer/ffprobe": "^2.1.2",
+    "@google/genai": "^3.4.0",
     "@google/generative-ai": "^0.24.1",
     "@volter/twin-mongodb": "^0.1.37",
     "archiver": "^7.0.1",
