@@ -21,8 +21,8 @@ const projectSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['waiting', 'analyzing', 'generating', 'completed', 'failed'],
-    default: 'waiting',
+    enum: ['Queued', 'Processing', 'Completed', 'Failed', 'waiting', 'analyzing', 'generating', 'completed', 'failed'],
+    default: 'Queued',
     index: true
   },
   progress: {
@@ -33,7 +33,7 @@ const projectSchema = new mongoose.Schema({
   },
   currentStep: {
     type: String,
-    default: 'Project queued'
+    default: 'Queued in processing pipeline'
   },
   videoDuration: {
     type: Number,
@@ -58,8 +58,8 @@ const projectSchema = new mongoose.Schema({
   },
   sourceType: {
     type: String,
-    enum: ['youtube', 'upload', 'sample'],
-    default: 'youtube'
+    enum: ['upload', 'youtube'],
+    default: 'upload'
   },
   sourcePath: {
     type: String,

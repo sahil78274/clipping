@@ -9,7 +9,6 @@ import {
   Sparkles,
   Link as LinkIcon,
   Upload,
-  Play,
   CheckCircle,
   Shield,
   Zap,
@@ -17,8 +16,7 @@ import {
   Layers,
   FileVideo,
   AlertCircle,
-  HelpCircle,
-  Sliders,
+  Info,
 } from 'lucide-react';
 
 export default function HomePage() {
@@ -33,11 +31,11 @@ export default function HomePage() {
   } = useAuth();
   const navigate = useNavigate();
 
-  // Mode: 'youtube' | 'upload' | 'sample'
-  const [inputMode, setInputMode] = useState('youtube');
+  // Mode: 'upload' | 'youtube'
+  const [inputMode, setInputMode] = useState('upload');
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [uploadedFile, setUploadedFile] = useState(null);
-  const [useSample, setUseSample] = useState(false);
+  const [projectTitle, setProjectTitle] = useState('');
 
   // Settings
   const [clipsCount, setClipsCount] = useState(5);
@@ -68,7 +66,7 @@ export default function HomePage() {
       if (pendingProject.captions !== undefined) setCaptions(pendingProject.captions);
 
       if (isAuthenticated) {
-        setInfoMessage('Your previously entered YouTube URL has been automatically restored.');
+        setInfoMessage('Your previously entered settings have been restored. Please select your authorized video file to begin.');
         clearPendingProject();
       }
     }
@@ -88,14 +86,9 @@ export default function HomePage() {
     setError('');
     setInfoMessage('');
 
-    // Validation
-    if (inputMode === 'youtube' && !youtubeUrl.trim() && !useSample) {
-      setError('Please enter a YouTube video URL or select creator sample mode.');
-      return;
-    }
-
-    if (inputMode === 'upload' && !uploadedFile) {
-      setError('Please select an authorized video file from your device.');
+    // Must have a real uploaded video file
+    if (!uploadedFile) {
+      setError('Please select an authorized video file (.mp4, .mov, .webm, .mkv) to process clips.');
       return;
     }
 
@@ -113,7 +106,9 @@ export default function HomePage() {
 
     // Check credit balance
     if (user && user.credits < estimatedCost) {
-      setError(`Insufficient credits. You need ${estimatedCost} credits for ${effectiveClipsCount} clips, but have ${user.credits}. Please get credits from the Credits page.`);
+      setError(
+        `Insufficient credits. You need ${estimatedCost} credits for ${effectiveClipsCount} clips, but have ${user.credits}. Please get credits from the Credits page.`
+      );
       return;
     }
 
@@ -124,13 +119,12 @@ export default function HomePage() {
       formData.append('clipsCount', effectiveClipsCount);
       formData.append('format', format);
       formData.append('captions', captions);
+      formData.append('videoFile', uploadedFile);
 
-      if (inputMode === 'upload' && uploadedFile) {
-        formData.append('videoFile', uploadedFile);
-      } else if (inputMode === 'sample' || useSample) {
-        formData.append('useSample', 'true');
-        formData.append('title', 'Creator Masterclass: The Viral Content Blueprint');
-      } else {
+      if (projectTitle.trim()) {
+        formData.append('title', projectTitle.trim());
+      }
+      if (youtubeUrl.trim()) {
         formData.append('youtubeUrl', youtubeUrl.trim());
       }
 
@@ -195,7 +189,7 @@ export default function HomePage() {
               margin: '0 auto 36px',
             }}
           >
-            Paste your YouTube link. Let AI find the best moments.
+            Paste your YouTube link or upload creator footage. Let AI find the best moments.
           </p>
 
           {/* Main Input Box */}
@@ -213,39 +207,20 @@ export default function HomePage() {
             >
               <button
                 type="button"
-                onClick={() => {
-                  setInputMode('youtube');
-                  setUseSample(false);
-                }}
-                className={`btn btn-sm ${inputMode === 'youtube' ? 'btn-primary' : 'btn-outline'}`}
-              >
-                <LinkIcon size={14} />
-                YouTube URL
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setInputMode('upload');
-                  setUseSample(false);
-                }}
+                onClick={() => setInputMode('upload')}
                 className={`btn btn-sm ${inputMode === 'upload' ? 'btn-primary' : 'btn-outline'}`}
               >
                 <Upload size={14} />
-                Upload Creator Video
+                Upload Authorized Video
               </button>
 
               <button
                 type="button"
-                onClick={() => {
-                  setInputMode('sample');
-                  setUseSample(true);
-                  setYoutubeUrl('');
-                }}
-                className={`btn btn-sm ${inputMode === 'sample' ? 'btn-primary' : 'btn-outline'}`}
+                onClick={() => setInputMode('youtube')}
+                className={`btn btn-sm ${inputMode === 'youtube' ? 'btn-primary' : 'btn-outline'}`}
               >
-                <Play size={14} />
-                Sample Creator Video (Instant Demo)
+                <LinkIcon size={14} />
+                YouTube Link & Source Video
               </button>
             </div>
 
@@ -275,6 +250,7 @@ export default function HomePage() {
                       borderRadius: 'var(--radius-md)',
                       padding: '4px 6px 4px 14px',
                       gap: '10px',
+                      marginBottom: '10px',
                     }}
                   >
                     <LinkIcon size={18} color="var(--text-muted)" style={{ flexShrink: 0 }} />
@@ -291,7 +267,6 @@ export default function HomePage() {
                         padding: '10px 0',
                         fontSize: '15px',
                       }}
-                      required={!useSample}
                     />
                     <button
                       type="button"
@@ -302,87 +277,79 @@ export default function HomePage() {
                       Paste
                     </button>
                   </div>
-                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '8px' }}>
-                    Supported formats: Standard YouTube videos, Podcasts, Interviews, Shorts.
-                  </div>
-                </div>
-              )}
 
-              {inputMode === 'upload' && (
-                <div style={{ marginBottom: '20px' }}>
-                  <label
-                    style={{
-                      border: '2px dashed var(--border)',
-                      borderRadius: 'var(--radius-md)',
-                      padding: '30px 20px',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      cursor: 'pointer',
-                      background: 'var(--bg-input)',
-                      textAlign: 'center',
-                      gap: '8px',
-                    }}
-                  >
-                    <Upload size={28} color="var(--green-accent)" />
-                    <span style={{ fontWeight: 600 }}>
-                      {uploadedFile ? uploadedFile.name : 'Choose creator video file'}
-                    </span>
-                    <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                      Supports MP4, MOV, WebM, MKV up to 500 MB
-                    </span>
-                    <input
-                      type="file"
-                      accept="video/*"
-                      onChange={(e) => setUploadedFile(e.target.files[0] || null)}
-                      style={{ display: 'none' }}
-                      required
-                    />
-                  </label>
-                </div>
-              )}
-
-              {inputMode === 'sample' && (
-                <div
-                  style={{
-                    marginBottom: '20px',
-                    padding: '16px',
-                    background: 'var(--bg-input)',
-                    border: '1px solid var(--border)',
-                    borderRadius: 'var(--radius-md)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '14px',
-                  }}
-                >
+                  {/* YouTube access rule notification */}
                   <div
                     style={{
-                      width: '42px',
-                      height: '42px',
-                      borderRadius: '8px',
-                      background: 'var(--green-light)',
+                      padding: '12px 14px',
+                      background: 'var(--bg-secondary)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 'var(--radius-md)',
+                      fontSize: '13px',
+                      color: 'var(--text-secondary)',
                       display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      color: 'var(--green-accent)',
-                      flexShrink: 0,
+                      alignItems: 'flex-start',
+                      gap: '10px',
+                      marginBottom: '16px',
                     }}
                   >
-                    <Play size={20} fill="#22C55E" />
-                  </div>
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: '14px' }}>
-                      Creator Masterclass: The Viral Content Blueprint (60s)
-                    </div>
-                    <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                      Pre-authorized sample creator video with 4 chapters, audio cues, and timestamps.
+                    <Info size={16} color="var(--green-accent)" style={{ flexShrink: 0, marginTop: '2px' }} />
+                    <div>
+                      <strong style={{ color: 'var(--text-primary)' }}>Source Video Requirement:</strong> Direct downloading of public YouTube URLs is not supported due to platform restrictions and copyright rules. Please attach your authorized creator video file below.
                     </div>
                   </div>
                 </div>
               )}
 
-              {/* Clip Generation Settings Bar (Section 6) */}
+              {/* Video File Picker */}
+              <div style={{ marginBottom: '20px' }}>
+                <label
+                  style={{
+                    border: uploadedFile ? '2px solid var(--green-primary)' : '2px dashed var(--border)',
+                    borderRadius: 'var(--radius-md)',
+                    padding: '24px 20px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                    background: uploadedFile ? 'var(--green-light)' : 'var(--bg-input)',
+                    textAlign: 'center',
+                    gap: '8px',
+                    transition: 'all 0.2s ease',
+                  }}
+                >
+                  <Upload size={28} color={uploadedFile ? 'var(--green-accent)' : 'var(--text-muted)'} />
+                  <span style={{ fontWeight: 600, color: uploadedFile ? 'var(--green-accent)' : 'var(--text-primary)' }}>
+                    {uploadedFile ? uploadedFile.name : 'Select authorized source video file (.mp4, .mov, .webm)'}
+                  </span>
+                  <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                    {uploadedFile
+                      ? `Size: ${(uploadedFile.size / (1024 * 1024)).toFixed(1)} MB - Click to change`
+                      : 'Supports creator MP4, MOV, WebM, MKV up to 500 MB'}
+                  </span>
+                  <input
+                    type="file"
+                    accept="video/mp4,video/quicktime,video/webm,video/x-matroska,video/avi"
+                    onChange={(e) => setUploadedFile(e.target.files[0] || null)}
+                    style={{ display: 'none' }}
+                  />
+                </label>
+              </div>
+
+              {/* Optional Project Title */}
+              <div style={{ marginBottom: '20px' }}>
+                <input
+                  type="text"
+                  placeholder="Optional project title (defaults to video filename)"
+                  value={projectTitle}
+                  onChange={(e) => setProjectTitle(e.target.value)}
+                  className="input-field"
+                  style={{ width: '100%', padding: '10px 14px' }}
+                />
+              </div>
+
+              {/* Clip Generation Settings Bar */}
               <div
                 style={{
                   background: 'var(--bg-secondary)',
@@ -517,7 +484,7 @@ export default function HomePage() {
                   style={{ minWidth: '220px' }}
                 >
                   {loading ? (
-                    'Analyzing...'
+                    'Uploading & Processing...'
                   ) : (
                     <>
                       <Scissors size={18} />
@@ -588,9 +555,9 @@ export default function HomePage() {
               >
                 1
               </div>
-              <h3 style={{ fontSize: '18px', marginBottom: '8px' }}>Paste Video Link or Upload</h3>
+              <h3 style={{ fontSize: '18px', marginBottom: '8px' }}>Upload Creator Video</h3>
               <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: 1.6 }}>
-                Provide your YouTube URL or upload a creator-owned video. Choose vertical 9:16, square 1:1, or widescreen 16:9.
+                Upload your creator-owned or authorized source video file. Choose vertical 9:16, square 1:1, or widescreen 16:9.
               </p>
             </div>
 
@@ -615,7 +582,7 @@ export default function HomePage() {
               </div>
               <h3 style={{ fontSize: '18px', marginBottom: '8px' }}>AI Moment Identification</h3>
               <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: 1.6 }}>
-                Gemini AI detects conversation hooks, punchlines, emotional moments, and high-engagement segments with precise timestamps.
+                Gemini AI analyzes the video to detect hooks, punchlines, and high-engagement moments with precise timestamps.
               </p>
             </div>
 
@@ -638,9 +605,9 @@ export default function HomePage() {
               >
                 3
               </div>
-              <h3 style={{ fontSize: '18px', marginBottom: '8px' }}>Preview, Fine-Tune & Export</h3>
+              <h3 style={{ fontSize: '18px', marginBottom: '8px' }}>Preview & Download MP4s</h3>
               <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: 1.6 }}>
-                FFmpeg renders clean MP4s with burned-in captions. Preview clips in-browser, adjust timestamps if desired, and download individually or in bulk ZIP.
+                FFmpeg renders real MP4s with burned-in subtitles. Preview clips in-browser, adjust timestamps if desired, and download individually or in bulk ZIP.
               </p>
             </div>
           </div>
