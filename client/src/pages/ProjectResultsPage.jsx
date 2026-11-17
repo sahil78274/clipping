@@ -10,15 +10,11 @@ import {
   RefreshCw,
   Trash2,
   Sliders,
-  Play,
-  Pause,
-  Clock,
   Sparkles,
   ArrowLeft,
   AlertCircle,
-  CheckCircle,
   FileVideo,
-  Layers,
+  Clock,
 } from 'lucide-react';
 
 export default function ProjectResultsPage() {
@@ -30,7 +26,6 @@ export default function ProjectResultsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [editingClip, setEditingClip] = useState(null);
-  const [activePlayingId, setActivePlayingId] = useState(null);
 
   const pollIntervalRef = useRef(null);
 
@@ -41,8 +36,8 @@ export default function ProjectResultsPage() {
         setProject(res.data.project);
         setClips(res.data.clips || []);
 
-        // Stop polling if completed or failed
-        if (res.data.project.status === 'completed' || res.data.project.status === 'failed') {
+        const status = (res.data.project.status || '').toLowerCase();
+        if (status === 'completed' || status === 'failed') {
           if (pollIntervalRef.current) {
             clearInterval(pollIntervalRef.current);
             pollIntervalRef.current = null;
@@ -60,7 +55,6 @@ export default function ProjectResultsPage() {
   useEffect(() => {
     fetchProjectData();
 
-    // Start polling every 2 seconds while processing
     pollIntervalRef.current = setInterval(fetchProjectData, 2000);
 
     return () => {
@@ -122,10 +116,11 @@ export default function ProjectResultsPage() {
     );
   }
 
-  const isProcessing =
-    project?.status === 'waiting' ||
-    project?.status === 'analyzing' ||
-    project?.status === 'generating';
+  const statusLower = (project?.status || '').toLowerCase();
+  const isQueued = statusLower === 'queued' || statusLower === 'waiting';
+  const isProcessing = statusLower === 'processing' || statusLower === 'analyzing' || statusLower === 'generating';
+  const isCompleted = statusLower === 'completed';
+  const isFailed = statusLower === 'failed';
 
   return (
     <div className="container" style={{ padding: '36px 20px 80px' }}>
@@ -157,9 +152,10 @@ export default function ProjectResultsPage() {
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
               <h1 style={{ fontSize: '24px' }}>{project?.title}</h1>
-              {project?.status === 'completed' && <span className="badge badge-green">Completed</span>}
-              {project?.status === 'failed' && <span className="badge badge-red">Failed</span>}
+              {isCompleted && <span className="badge badge-green">Completed</span>}
+              {isFailed && <span className="badge badge-red">Failed</span>}
               {isProcessing && <span className="badge badge-amber">Processing</span>}
+              {isQueued && <span className="badge badge-neutral">Queued</span>}
             </div>
 
             <div style={{ fontSize: '13px', color: 'var(--text-secondary)', display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
@@ -168,7 +164,7 @@ export default function ProjectResultsPage() {
                   Source: {project.youtubeUrl}
                 </span>
               )}
-              <span>Format: {project?.settings?.format}</span>
+              <span>Format: {project?.settings?.format || '9:16'}</span>
               <span>Captions: {project?.settings?.captions ? 'Enabled' : 'Disabled'}</span>
               <span>Duration: {Math.round(project?.videoDuration || 0)}s</span>
             </div>
@@ -176,7 +172,7 @@ export default function ProjectResultsPage() {
 
           {/* Action buttons */}
           <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-            {project?.status === 'completed' && clips.length > 0 && (
+            {isCompleted && clips.length > 0 && (
               <a
                 href={`/api/clips/download-all/${project._id}`}
                 className="btn btn-primary"
@@ -187,7 +183,7 @@ export default function ProjectResultsPage() {
               </a>
             )}
 
-            {project?.status === 'failed' && (
+            {isFailed && (
               <button onClick={handleRetry} className="btn btn-primary">
                 <RefreshCw size={16} />
                 Retry Project
@@ -198,7 +194,7 @@ export default function ProjectResultsPage() {
       </div>
 
       {/* Live Processing Card */}
-      {isProcessing && (
+      {(isQueued || isProcessing) && (
         <div className="card pulse-generating" style={{ marginBottom: '32px', border: '1px solid var(--green-primary)' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -242,19 +238,19 @@ export default function ProjectResultsPage() {
           </div>
 
           <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-            Gemini is analyzing speech cadence, hooks, and timestamps. FFmpeg is rendering vertical MP4s. Please remain on this page or check back in My Projects.
+            Analyzing audio/scene transitions and rendering actual MP4 clips using FFmpeg. Progress updates automatically.
           </div>
         </div>
       )}
 
       {/* Failure state notice */}
-      {project?.status === 'failed' && (
+      {isFailed && (
         <div className="alert alert-error" style={{ marginBottom: '28px' }}>
           <AlertCircle size={18} style={{ flexShrink: 0 }} />
           <div>
-            <div style={{ fontWeight: 600 }}>Processing encountered an issue</div>
+            <div style={{ fontWeight: 600 }}>Video processing failed</div>
             <div style={{ fontSize: '13px', marginTop: '2px' }}>
-              {project.errorMessage || 'Unable to extract clips from this source. Any reserved credits have been refunded.'}
+              {project.errorMessage || 'An error occurred while analyzing or rendering clips. Any reserved credits have been refunded.'}
             </div>
           </div>
         </div>
@@ -265,20 +261,22 @@ export default function ProjectResultsPage() {
         <h2 style={{ fontSize: '18px' }}>
           Generated Clips ({clips.length})
         </h2>
-        {project?.status === 'completed' && (
+        {isCompleted && (
           <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
-            Rendered in {project.settings.format} with burned-in subtitles
+            Rendered in {project.settings.format} MP4 format
           </span>
         )}
       </div>
 
       {/* Clips Grid */}
-      {clips.length === 0 && !isProcessing ? (
+      {clips.length === 0 && !isProcessing && !isQueued ? (
         <div className="card" style={{ textAlign: 'center', padding: '50px 20px' }}>
           <FileVideo size={40} color="var(--text-muted)" style={{ margin: '0 auto 12px' }} />
-          <h3 style={{ fontSize: '16px', marginBottom: '6px' }}>No clips generated yet</h3>
+          <h3 style={{ fontSize: '16px', marginBottom: '6px' }}>No clips available</h3>
           <p style={{ color: 'var(--text-secondary)', fontSize: '14px', maxWidth: '400px', margin: '0 auto' }}>
-            This project has not completed clip generation. If it failed, click Retry above.
+            {isFailed
+              ? 'This project encountered an error. Check the error message above or retry with an authorized video.'
+              : 'Clips will appear here once rendering is complete.'}
           </p>
         </div>
       ) : (
@@ -289,7 +287,7 @@ export default function ProjectResultsPage() {
             gap: '20px',
           }}
         >
-          {clips.map((clip, idx) => (
+          {clips.map((clip) => (
             <div
               key={clip._id}
               className="card"
@@ -300,7 +298,7 @@ export default function ProjectResultsPage() {
                 flexDirection: 'column',
               }}
             >
-              {/* Video Player / Preview Area */}
+              {/* Video Player */}
               <div
                 style={{
                   position: 'relative',
@@ -325,7 +323,6 @@ export default function ProjectResultsPage() {
                     objectFit: 'contain',
                     background: '#000000',
                   }}
-                  onPlay={() => setActivePlayingId(clip._id)}
                 />
 
                 {/* Score badge overlay */}

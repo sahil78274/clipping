@@ -224,7 +224,7 @@ const getSystemStatus = async (req, res) => {
         gemini: {
           isConfigured: geminiKeyConfigured,
           model: geminiModel,
-          status: geminiKeyConfigured ? 'Active' : 'Fallback Pacing Engine Active (API Key Not Set)',
+          status: geminiKeyConfigured ? 'Active' : 'Awaiting API Key in GEMINI_API_KEY',
         },
         ffmpeg: {
           status: 'Active',

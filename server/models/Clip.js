@@ -74,8 +74,8 @@ const clipSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['generating', 'completed', 'failed'],
-    default: 'generating'
+    enum: ['Processing', 'Completed', 'Failed', 'generating', 'completed', 'failed'],
+    default: 'Processing'
   },
   errorMessage: {
     type: String,

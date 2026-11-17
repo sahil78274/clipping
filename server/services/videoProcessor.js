@@ -17,7 +17,7 @@ const uploadsDir = path.join(__dirname, '../uploads');
 if (!fs.existsSync(outputsDir)) fs.mkdirSync(outputsDir, { recursive: true });
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
-// Locate font file
+// Locate font file for drawtext
 const fontCandidates = [
   '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
   '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
@@ -32,18 +32,30 @@ for (const f of fontCandidates) {
 }
 
 /**
- * Probes video file and extracts technical metadata
+ * Probes real video file and extracts technical metadata
  */
 function getVideoMetadata(filePath) {
   return new Promise((resolve, reject) => {
+    if (!filePath || !fs.existsSync(filePath)) {
+      return reject(new Error(`Video file does not exist: ${filePath}`));
+    }
+
     ffmpeg.ffprobe(filePath, (err, metadata) => {
-      if (err) return reject(err);
+      if (err) return reject(new Error(`Failed to probe video file: ${err.message}`));
 
       const format = metadata.format || {};
-      const videoStream = (metadata.streams || []).find((s) => s.codec_type === 'video') || {};
+      const videoStream = (metadata.streams || []).find((s) => s.codec_type === 'video');
       const audioStream = (metadata.streams || []).find((s) => s.codec_type === 'audio');
 
+      if (!videoStream) {
+        return reject(new Error('Uploaded file contains no valid video stream.'));
+      }
+
       const duration = parseFloat(format.duration || videoStream.duration || 0);
+      if (isNaN(duration) || duration <= 0) {
+        return reject(new Error('Invalid video duration detected.'));
+      }
+
       const width = parseInt(videoStream.width || 1280, 10);
       const height = parseInt(videoStream.height || 720, 10);
 
@@ -61,7 +73,7 @@ function getVideoMetadata(filePath) {
         height,
         fps: fps || 30,
         formatName: format.format_name,
-        size: format.size,
+        size: format.size || 0,
         hasAudio: !!audioStream,
       });
     });
@@ -69,85 +81,106 @@ function getVideoMetadata(filePath) {
 }
 
 /**
- * Creates or retrieves the default authorized sample video for testing
+ * Detects real scene transition timestamps or audio activity from the actual video file
  */
-async function getOrCreateSampleVideo() {
-  const samplePath = path.join(uploadsDir, 'sample_creator_authorized_video.mp4');
+function detectVideoMoments(filePath, duration, count = 5) {
+  return new Promise((resolve) => {
+    const targetCount = Math.max(1, Math.min(count, Math.floor(duration / 5)));
+    const clipLength = Math.min(45, Math.max(10, Math.floor(duration / targetCount)));
 
-  if (fs.existsSync(samplePath)) {
-    try {
-      const meta = await getVideoMetadata(samplePath);
-      if (meta.duration >= 30) {
-        return {
-          path: samplePath,
-          title: 'Creator Masterclass: The Viral Content Blueprint',
-          duration: meta.duration,
-          metadata: meta,
-        };
-      }
-    } catch (e) {
-      // Re-generate if corrupted
-    }
-  }
-
-  console.log('[VideoProcessor] Generating high-quality authorized sample creator video (60s)...');
-
-  // Generate 60-second multi-scene creator video with sound and visual markers
-  return new Promise((resolve, reject) => {
-    const fontStr = chosenFont.startsWith('/') ? `:fontfile=${chosenFont}` : '';
-
-    // Create 60s video with timer, title and audio beep/harmony
-    const vf = [
-      `drawtext=text='CLIPPING CREATOR MASTERCLASS'${fontStr}:fontcolor=0x22C55E:fontsize=34:x=(w-text_w)/2:y=60:box=1:boxcolor=0x090D0B@0.8:boxborderw=10`,
-      `drawtext=text='%{pts\\:gmtime\\:0\\:%M\\\\\\:%S}'${fontStr}:fontcolor=white:fontsize=72:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=0x151C18@0.9:boxborderw=20`,
-      `drawtext=text='Long Videos. Best Moments.'${fontStr}:fontcolor=0xA1A1AA:fontsize=24:x=(w-text_w)/2:y=h-100:box=1:boxcolor=0x090D0B@0.8:boxborderw=8`,
-    ].join(',');
-
-    ffmpeg()
-      .input('testsrc=duration=60:size=1280x720:rate=30')
-      .inputFormat('lavfi')
-      .input('sine=frequency=440:duration=60:beep_factor=4')
-      .inputFormat('lavfi')
-      .videoFilters(vf)
-      .outputOptions([
-        '-c:v libx264',
-        '-preset ultrafast',
-        '-pix_fmt yuv420p',
-        '-c:a aac',
-        '-b:a 128k',
-        '-movflags +faststart',
-        '-shortest',
-      ])
-      .output(samplePath)
-      .on('end', async () => {
-        console.log('[VideoProcessor] Sample creator video generated successfully at:', samplePath);
-        const meta = await getVideoMetadata(samplePath);
-        resolve({
-          path: samplePath,
-          title: 'Creator Masterclass: The Viral Content Blueprint',
-          duration: meta.duration,
-          metadata: meta,
-        });
+    // Attempt detecting scene cuts with ffmpeg
+    const scenePoints = [];
+    ffmpeg(filePath)
+      .videoFilters("select='gt(scene,0.25)',showinfo")
+      .format('null')
+      .output('-')
+      .on('stderr', (line) => {
+        const match = line.match(/pts_time:([0-9.]+)/);
+        if (match) {
+          const t = parseFloat(match[1]);
+          if (!isNaN(t) && t > 1 && t < duration - 5) {
+            scenePoints.push(Math.round(t));
+          }
+        }
       })
-      .on('error', (err) => {
-        console.error('[VideoProcessor] Error creating sample video:', err);
-        reject(err);
+      .on('end', () => {
+        resolve(buildMomentsFromPoints(scenePoints, duration, targetCount, clipLength));
+      })
+      .on('error', () => {
+        // Fallback to proportional division of the real video timeline
+        resolve(buildMomentsFromPoints([], duration, targetCount, clipLength));
       })
       .run();
   });
+}
+
+function buildMomentsFromPoints(points, duration, targetCount, clipLength) {
+  const moments = [];
+  const safeDuration = Math.max(5, Math.floor(duration));
+
+  if (points.length >= targetCount) {
+    // Pick evenly spaced scene cut points
+    const step = points.length / targetCount;
+    for (let i = 0; i < targetCount; i++) {
+      const cut = points[Math.floor(i * step)];
+      const start = Math.max(0, cut);
+      const end = Math.min(safeDuration, start + clipLength);
+      if (end - start >= 5) {
+        moments.push({
+          startTime: start,
+          endTime: end,
+          duration: end - start,
+          score: Math.min(98, 85 + (i % 12)),
+        });
+      }
+    }
+  }
+
+  // If scene detection yielded fewer points than requested, space across real timeline
+  if (moments.length < targetCount) {
+    const remaining = targetCount - moments.length;
+    const interval = safeDuration / (remaining + 1);
+    for (let i = 0; i < remaining; i++) {
+      const center = Math.floor(interval * (i + 1));
+      const start = Math.max(0, center - Math.floor(clipLength / 2));
+      const end = Math.min(safeDuration, start + clipLength);
+      if (end - start >= 5) {
+        moments.push({
+          startTime: start,
+          endTime: end,
+          duration: end - start,
+          score: Math.min(98, 82 + ((i * 3) % 15)),
+        });
+      }
+    }
+  }
+
+  // Ensure sorted by start time and non-overlapping
+  moments.sort((a, b) => a.startTime - b.startTime);
+  return moments.slice(0, targetCount);
 }
 
 /**
  * Extracts a poster frame JPEG thumbnail from video at specified timestamp
  */
 function extractThumbnail(videoPath, thumbnailPath, timeInSeconds = 1) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    if (!fs.existsSync(videoPath)) {
+      return reject(new Error('Cannot extract thumbnail: source video does not exist.'));
+    }
+
     ffmpeg(videoPath)
       .seekInput(Math.max(0, timeInSeconds))
       .frames(1)
       .output(thumbnailPath)
       .outputOptions(['-vf scale=480:-1', '-q:v 3'])
-      .on('end', () => resolve(true))
+      .on('end', () => {
+        if (fs.existsSync(thumbnailPath)) {
+          resolve(true);
+        } else {
+          resolve(false);
+        }
+      })
       .on('error', (err) => {
         console.warn('[VideoProcessor] Thumbnail extraction warning:', err.message);
         resolve(false);
@@ -157,7 +190,7 @@ function extractThumbnail(videoPath, thumbnailPath, timeInSeconds = 1) {
 }
 
 /**
- * Renders an individual clip using FFmpeg
+ * Renders an individual clip using FFmpeg from the real source video
  */
 function renderClip({
   inputPath,
@@ -170,6 +203,10 @@ function renderClip({
   title = '',
 }) {
   return new Promise((resolve, reject) => {
+    if (!inputPath || !fs.existsSync(inputPath)) {
+      return reject(new Error(`Input source video file not found: ${inputPath}`));
+    }
+
     const duration = Math.max(1, endTime - startTime);
     const fontStr = chosenFont.startsWith('/') ? `:fontfile=${chosenFont}` : '';
 
@@ -189,7 +226,6 @@ function renderClip({
 
     // Burn-in captions/hook overlay if captions enabled
     if (captions && title) {
-      // Clean up title text for FFmpeg drawtext
       const sanitizedText = title
         .replace(/['"\\]/g, '')
         .replace(/:/g, ' - ')
@@ -220,32 +256,36 @@ function renderClip({
 
     command
       .on('start', (cmd) => {
-        console.log(`[VideoProcessor] Rendering clip (${format}, ${duration}s): ${outputPath}`);
+        console.log(`[VideoProcessor] FFmpeg rendering clip (${format}, ${duration}s) to ${path.basename(outputPath)}`);
       })
       .on('end', async () => {
         try {
+          if (!fs.existsSync(outputPath)) {
+            return reject(new Error('FFmpeg completed but output MP4 file was not created.'));
+          }
+
+          const stats = fs.statSync(outputPath);
+          if (stats.size === 0) {
+            return reject(new Error('FFmpeg generated an empty MP4 file.'));
+          }
+
           // Generate thumbnail
           if (thumbnailPath) {
             await extractThumbnail(outputPath, thumbnailPath, Math.min(1.5, duration / 2));
           }
 
-          const stats = fs.statSync(outputPath);
           resolve({
             outputPath,
             duration,
             fileSize: stats.size,
           });
         } catch (postErr) {
-          resolve({
-            outputPath,
-            duration,
-            fileSize: 0,
-          });
+          reject(postErr);
         }
       })
       .on('error', (err) => {
         console.error('[VideoProcessor] FFmpeg rendering error:', err.message);
-        reject(err);
+        reject(new Error(`FFmpeg rendering failed: ${err.message}`));
       });
 
     command.run();
@@ -254,7 +294,7 @@ function renderClip({
 
 module.exports = {
   getVideoMetadata,
-  getOrCreateSampleVideo,
+  detectVideoMoments,
   extractThumbnail,
   renderClip,
   outputsDir,
