@@ -205,7 +205,11 @@ export default function ProjectsPage() {
                 >
                   <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                     <Film size={14} color="var(--green-accent)" />
-                    {p.clipsCount || 0} Clips ({p.settings?.clipDuration || 30}s)
+                    {p.clipsCount || 0} Clips (
+                    {p.minClipDuration || p.settings?.minClipDuration
+                      ? `${p.minClipDuration || p.settings?.minClipDuration}–${p.maxClipDuration || p.settings?.maxClipDuration}s`
+                      : `${p.settings?.clipDuration || 30}s`}
+                    )
                   </span>
                   <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                     <Clock size={14} />

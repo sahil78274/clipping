@@ -258,7 +258,7 @@ export default function MyClipsPage() {
                   }}
                 >
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: 'var(--green-accent)', fontWeight: 600 }}>
-                    Duration: {clip.duration ? Number(clip.duration).toFixed(1) : (clip.endTime - clip.startTime).toFixed(1)}s
+                    Duration: {clip.actualClipDuration ? Number(clip.actualClipDuration).toFixed(1) : clip.duration ? Number(clip.duration).toFixed(1) : (clip.endTime - clip.startTime).toFixed(1)}s
                   </span>
                   <span>
                     {clip.enhancementStatus === 'completed' && clip.enhancedResolution

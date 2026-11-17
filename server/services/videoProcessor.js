@@ -82,15 +82,27 @@ function getVideoMetadata(filePath) {
 
 /**
  * Detects real scene transition timestamps or audio activity from the actual video file,
- * aligning with requested targetDuration and clipsCount.
+ * aligning with requested minClipDuration, maxClipDuration, and clipsCount.
+ * Enforces a strict 600-second (10-minute) limit per clip.
  */
-function detectVideoMoments(filePath, duration, count = 5, targetDuration = 30) {
+function detectVideoMoments(filePath, duration, count = 5, minClipDuration = 60, maxClipDuration = 90) {
   return new Promise((resolve) => {
-    const safeDuration = Math.max(3, Math.floor(duration));
-    const effectiveTargetDuration = Math.min(safeDuration, Math.max(3, Math.floor(targetDuration)));
-    const maxPossibleClips = Math.max(1, Math.floor(safeDuration / effectiveTargetDuration));
+    const maxLimit = Math.min(600, Math.max(15, Number(maxClipDuration) || 90));
+    const minLimit = Math.max(15, Math.min(Number(minClipDuration) || 60, maxLimit));
+    const safeDuration = Math.floor(duration);
+
+    if (safeDuration < minLimit) {
+      // Source video does not have enough content for even 1 clip in the requested range
+      return resolve([]);
+    }
+
+    const targetLength = Math.min(
+      safeDuration,
+      Math.min(maxLimit, Math.max(minLimit, Math.round((minLimit + maxLimit) / 2)))
+    );
+    const maxPossibleClips = Math.max(1, Math.floor(safeDuration / targetLength));
     const targetCount = Math.min(count, maxPossibleClips);
-    const clipLength = effectiveTargetDuration;
+    const clipLength = targetLength;
 
     // Attempt detecting scene cuts with ffmpeg
     const scenePoints = [];
@@ -102,81 +114,122 @@ function detectVideoMoments(filePath, duration, count = 5, targetDuration = 30) 
         const match = line.match(/pts_time:([0-9.]+)/);
         if (match) {
           const t = parseFloat(match[1]);
-          if (!isNaN(t) && t >= 0 && t <= safeDuration - 2) {
+          if (!isNaN(t) && t >= 0 && t <= safeDuration - minLimit) {
             scenePoints.push(Math.round(t));
           }
         }
       })
       .on('end', () => {
-        resolve(buildMomentsFromPoints(scenePoints, safeDuration, targetCount, clipLength));
+        resolve(buildMomentsFromPoints(scenePoints, safeDuration, targetCount, minLimit, maxLimit, clipLength));
       })
       .on('error', () => {
-        // Fallback to proportional division of the real video timeline
-        resolve(buildMomentsFromPoints([], safeDuration, targetCount, clipLength));
+        resolve(buildMomentsFromPoints([], safeDuration, targetCount, minLimit, maxLimit, clipLength));
       })
       .run();
   });
 }
 
-function buildMomentsFromPoints(points, safeDuration, targetCount, clipLength) {
+function buildMomentsFromPoints(points, safeDuration, targetCount, minLimit, maxLimit, clipLength) {
   const moments = [];
 
+  // If we have scene cuts, attempt using them
   if (points.length >= targetCount) {
-    // Pick evenly spaced scene cut points
     const step = points.length / targetCount;
     for (let i = 0; i < targetCount; i++) {
       const cut = points[Math.floor(i * step)];
       let start = Math.max(0, cut);
       let end = Math.min(safeDuration, start + clipLength);
-      if (end - start < clipLength && start > 0) {
-        start = Math.max(0, end - clipLength);
+      let dur = end - start;
+
+      if (dur < minLimit && start > 0) {
+        start = Math.max(0, end - minLimit);
+        dur = end - start;
       }
-      if (end - start >= 3) {
+      if (dur > maxLimit) {
+        end = start + maxLimit;
+        dur = maxLimit;
+      }
+      if (dur > 600) {
+        end = start + 600;
+        dur = 600;
+      }
+
+      if (dur >= Math.min(safeDuration, minLimit)) {
         moments.push({
           startTime: start,
           endTime: end,
-          duration: end - start,
+          duration: dur,
+          actualClipDuration: dur,
           score: Math.min(98, 85 + (i % 12)),
         });
       }
     }
   }
 
-  // If scene detection yielded fewer points than requested, space across real timeline
-  if (moments.length < targetCount) {
-    const remaining = targetCount - moments.length;
-    const interval = Math.max(0, (safeDuration - clipLength) / Math.max(1, remaining + 1));
-    for (let i = 0; i < remaining; i++) {
-      let start = Math.max(0, Math.floor(interval * (i + 1)));
+  // Filter overlapping moments from scene detection
+  moments.sort((a, b) => a.startTime - b.startTime);
+  const nonOverlapping = [];
+  for (const m of moments) {
+    const overlaps = nonOverlapping.some(
+      (c) => Math.max(m.startTime, c.startTime) < Math.min(m.endTime, c.endTime)
+    );
+    if (!overlaps) {
+      nonOverlapping.push(m);
+    }
+    if (nonOverlapping.length >= targetCount) break;
+  }
+
+  // If scene cuts did not yield enough non-overlapping moments, space evenly across the timeline
+  if (nonOverlapping.length < targetCount) {
+    nonOverlapping.length = 0; // Fresh clean non-overlapping distribution
+    const maxFitting = Math.max(1, Math.floor(safeDuration / clipLength));
+    const effectiveCount = Math.min(targetCount, maxFitting);
+    const spacing = Math.floor(safeDuration / effectiveCount);
+
+    for (let i = 0; i < effectiveCount; i++) {
+      let start = i * spacing;
       let end = Math.min(safeDuration, start + clipLength);
-      if (end - start < clipLength && start > 0) {
-        start = Math.max(0, end - clipLength);
+      let dur = end - start;
+
+      if (dur < minLimit && start > 0) {
+        start = Math.max(0, end - minLimit);
+        dur = end - start;
       }
-      if (end - start >= 3) {
-        moments.push({
+      if (dur > maxLimit) {
+        end = start + maxLimit;
+        dur = maxLimit;
+      }
+      if (dur > 600) {
+        end = start + 600;
+        dur = 600;
+      }
+
+      if (dur >= Math.min(safeDuration, minLimit)) {
+        nonOverlapping.push({
           startTime: start,
           endTime: end,
-          duration: end - start,
-          score: Math.min(98, 82 + ((i * 3) % 15)),
+          duration: dur,
+          actualClipDuration: dur,
+          score: Math.min(98, 85 + (i % 12)),
         });
       }
     }
   }
 
   // Fallback: at least 1 moment spanning up to clipLength
-  if (moments.length === 0) {
-    const end = Math.min(safeDuration, clipLength);
-    moments.push({
+  if (nonOverlapping.length === 0 && safeDuration >= minLimit) {
+    const end = Math.min(safeDuration, Math.min(600, clipLength));
+    nonOverlapping.push({
       startTime: 0,
       endTime: end,
       duration: end,
+      actualClipDuration: end,
       score: 88,
     });
   }
 
-  // Ensure sorted by start time and non-overlapping
-  moments.sort((a, b) => a.startTime - b.startTime);
-  return moments.slice(0, targetCount);
+  nonOverlapping.sort((a, b) => a.startTime - b.startTime);
+  return nonOverlapping.slice(0, targetCount);
 }
 
 /**
@@ -210,6 +263,7 @@ function extractThumbnail(videoPath, thumbnailPath, timeInSeconds = 1) {
 
 /**
  * Renders an individual clip using FFmpeg from the real source video
+ * Enforces a strict maximum of 600 seconds (10 minutes) per individual clip.
  */
 function renderClip({
   inputPath,
@@ -226,7 +280,10 @@ function renderClip({
       return reject(new Error(`Input source video file not found: ${inputPath}`));
     }
 
-    const duration = Math.max(1, endTime - startTime);
+    const requestedDuration = Math.max(1, endTime - startTime);
+    // Hard ceiling: never generate an individual clip longer than 600s
+    const duration = Math.min(600, requestedDuration);
+
     const fontStr = chosenFont.startsWith('/') ? `:fontfile=${chosenFont}` : '';
 
     // Build video filter chain for aspect ratio
@@ -234,16 +291,18 @@ function renderClip({
     let resolution = '720x1280';
 
     if (format === '9:16') {
-      // Smart crop to 9:16 center, then scale to 720x1280
       filters.push('crop=ih*9/16:ih:(iw-ih*9/16)/2:0', 'scale=720:1280:flags=lanczos');
       resolution = '720x1280';
     } else if (format === '1:1') {
-      // Smart crop to 1:1 center, then scale to 720x720
-      filters.push('crop=min(iw\\,ih):min(iw\\,ih):(iw-min(iw\\,ih))/2:(ih-min(iw\\,ih))/2', 'scale=720:720:flags=lanczos');
+      filters.push(
+        'crop=min(iw\\,ih):min(iw\\,ih):(iw-min(iw\\,ih))/2:(ih-min(iw\\,ih))/2',
+        'scale=720:720:flags=lanczos'
+      );
       resolution = '720x720';
     } else {
-      // 16:9 standard
-      filters.push('scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black');
+      filters.push(
+        'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black'
+      );
       resolution = '1280x720';
     }
 
@@ -292,14 +351,26 @@ function renderClip({
             return reject(new Error('FFmpeg generated an empty MP4 file.'));
           }
 
+          // Measure actual probed duration of the generated MP4
+          let actualDuration = duration;
+          try {
+            const meta = await getVideoMetadata(outputPath);
+            if (meta.duration && !isNaN(meta.duration)) {
+              actualDuration = parseFloat(meta.duration.toFixed(2));
+            }
+          } catch (probeErr) {
+            console.warn('[VideoProcessor] Could not probe output clip duration:', probeErr.message);
+          }
+
           // Generate thumbnail
           if (thumbnailPath) {
-            await extractThumbnail(outputPath, thumbnailPath, Math.min(1.5, duration / 2));
+            await extractThumbnail(outputPath, thumbnailPath, Math.min(1.5, actualDuration / 2));
           }
 
           resolve({
             outputPath,
-            duration,
+            duration: actualDuration,
+            actualClipDuration: actualDuration,
             fileSize: stats.size,
             resolution,
           });
@@ -341,15 +412,10 @@ function enhanceClipTo1080p({ inputClipPath, outputEnhancedPath, format = '9:16'
       targetWidth = 1080;
       targetHeight = 1080;
     } else {
-      // 9:16 portrait
       targetWidth = 1080;
       targetHeight = 1920;
     }
 
-    // Enhancement filter chain:
-    // 1. Noise reduction: hqdn3d (cleans noise without blurring edges)
-    // 2. Lanczos scaling to 1080p target resolution
-    // 3. Unsharp mask: unsharp=5:5:0.8:5:5:0.0 (sharpens luma details naturally without ringing artifacts)
     const filters = [
       'hqdn3d=1.5:1.5:3.0:3.0',
       `scale=${targetWidth}:${targetHeight}:flags=lanczos`,
@@ -386,7 +452,6 @@ function enhanceClipTo1080p({ inputClipPath, outputEnhancedPath, format = '9:16'
             return reject(new Error('Enhanced MP4 file was generated with 0 bytes.'));
           }
 
-          // Probe to confirm actual enhanced dimensions
           const meta = await getVideoMetadata(outputEnhancedPath);
 
           resolve({
@@ -394,6 +459,7 @@ function enhanceClipTo1080p({ inputClipPath, outputEnhancedPath, format = '9:16'
             resolution: `${meta.width}x${meta.height}`,
             fileSize: stats.size,
             duration: meta.duration,
+            actualClipDuration: meta.duration,
           });
         } catch (err) {
           reject(err);

@@ -41,6 +41,22 @@ const clipSchema = new mongoose.Schema({
     required: true,
     min: 1
   },
+  actualClipDuration: {
+    type: Number,
+    default: 0
+  },
+  minClipDuration: {
+    type: Number,
+    default: 60
+  },
+  maxClipDuration: {
+    type: Number,
+    default: 90
+  },
+  selectedDurationPreset: {
+    type: String,
+    default: '60-90s'
+  },
   score: {
     type: Number,
     default: 85,

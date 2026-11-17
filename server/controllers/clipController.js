@@ -270,6 +270,10 @@ const rerenderClip = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Clip duration must be at least 3 seconds.' });
     }
 
+    if (end - start > 600) {
+      return res.status(400).json({ success: false, message: 'Individual clip duration cannot exceed 10 minutes (600 seconds).' });
+    }
+
     const newTitle = title ? title.trim() : clip.title;
 
     // Generate new file paths
@@ -303,6 +307,7 @@ const rerenderClip = async (req, res) => {
     clip.startTime = start;
     clip.endTime = end;
     clip.duration = renderRes.duration;
+    clip.actualClipDuration = renderRes.actualClipDuration || renderRes.duration;
     clip.title = newTitle;
     clip.videoPath = newOutputPath;
     clip.videoUrl = `/outputs/${newClipFileName}`;

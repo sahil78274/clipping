@@ -41,8 +41,9 @@ export default function HomePage() {
   const [clipsCount, setClipsCount] = useState(5);
   const [customClipsCount, setCustomClipsCount] = useState('');
   const [isCustomCount, setIsCustomCount] = useState(false);
-  const [clipDurationMode, setClipDurationMode] = useState('30');
-  const [customDuration, setCustomDuration] = useState('');
+  const [selectedDurationPreset, setSelectedDurationPreset] = useState('60-90s');
+  const [customMinDuration, setCustomMinDuration] = useState('60');
+  const [customMaxDuration, setCustomMaxDuration] = useState('90');
   const [qualityEnhancement, setQualityEnhancement] = useState('original');
   const [format, setFormat] = useState('9:16');
   const [captions, setCaptions] = useState(true);
@@ -50,6 +51,18 @@ export default function HomePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [infoMessage, setInfoMessage] = useState('');
+
+  // Preset definition list
+  const DURATION_PRESETS = [
+    { id: '15-30s', label: '15–30s', min: 15, max: 30 },
+    { id: '30-45s', label: '30–45s', min: 30, max: 45 },
+    { id: '45-60s', label: '45–60s', min: 45, max: 60 },
+    { id: '60-90s', label: '60–90s', min: 60, max: 90, isDefault: true },
+    { id: '90-120s', label: '90–120s', min: 90, max: 120 },
+    { id: '2-5m', label: '2–5 min', min: 120, max: 300 },
+    { id: '5-10m', label: '5–10 min', min: 300, max: 600 },
+    { id: 'custom', label: 'Custom', min: 15, max: 600 },
+  ];
 
   // Calculate estimated credit cost (2 credits per clip)
   const effectiveClipsCount = isCustomCount
@@ -67,8 +80,9 @@ export default function HomePage() {
       if (pendingProject.clipsCount) setClipsCount(pendingProject.clipsCount);
       if (pendingProject.format) setFormat(pendingProject.format);
       if (pendingProject.captions !== undefined) setCaptions(pendingProject.captions);
-      if (pendingProject.clipDurationMode) setClipDurationMode(pendingProject.clipDurationMode);
-      if (pendingProject.customDuration) setCustomDuration(pendingProject.customDuration);
+      if (pendingProject.selectedDurationPreset) setSelectedDurationPreset(pendingProject.selectedDurationPreset);
+      if (pendingProject.customMinDuration) setCustomMinDuration(pendingProject.customMinDuration);
+      if (pendingProject.customMaxDuration) setCustomMaxDuration(pendingProject.customMaxDuration);
       if (pendingProject.qualityEnhancement) setQualityEnhancement(pendingProject.qualityEnhancement);
 
       if (isAuthenticated) {
@@ -98,17 +112,34 @@ export default function HomePage() {
       return;
     }
 
-    // Validate custom duration
-    let effectiveDuration = 30;
-    if (clipDurationMode === 'custom') {
-      const cd = parseInt(customDuration, 10);
-      if (isNaN(cd) || cd < 5 || cd > 300) {
-        setError('Please enter a valid custom clip duration between 5 and 300 seconds.');
+    // Determine and validate min and max duration
+    let minDur = 60;
+    let maxDur = 90;
+
+    if (selectedDurationPreset === 'custom') {
+      const minVal = parseInt(customMinDuration, 10);
+      const maxVal = parseInt(customMaxDuration, 10);
+
+      if (isNaN(minVal) || minVal < 15 || minVal > 600) {
+        setError('Minimum duration must be between 15 and 600 seconds.');
         return;
       }
-      effectiveDuration = cd;
+      if (isNaN(maxVal) || maxVal < 15 || maxVal > 600) {
+        setError('Maximum duration must be between 15 and 600 seconds (10 minutes max).');
+        return;
+      }
+      if (maxVal < minVal) {
+        setError('Maximum duration must be greater than or equal to minimum duration.');
+        return;
+      }
+      minDur = minVal;
+      maxDur = maxVal;
     } else {
-      effectiveDuration = parseInt(clipDurationMode, 10) || 30;
+      const preset = DURATION_PRESETS.find((p) => p.id === selectedDurationPreset);
+      if (preset) {
+        minDur = preset.min;
+        maxDur = preset.max;
+      }
     }
 
     // Non-logged-in user handling
@@ -116,8 +147,9 @@ export default function HomePage() {
       savePendingProject({
         youtubeUrl: youtubeUrl.trim(),
         clipsCount: effectiveClipsCount,
-        clipDurationMode,
-        customDuration,
+        selectedDurationPreset,
+        customMinDuration,
+        customMaxDuration,
         qualityEnhancement,
         format,
         captions,
@@ -139,8 +171,11 @@ export default function HomePage() {
     try {
       const formData = new FormData();
       formData.append('clipsCount', effectiveClipsCount);
-      formData.append('clipDuration', effectiveDuration);
-      formData.append('clipDurationMode', clipDurationMode);
+      formData.append('minClipDuration', minDur);
+      formData.append('maxClipDuration', maxDur);
+      formData.append('selectedDurationPreset', selectedDurationPreset);
+      formData.append('clipDuration', Math.round((minDur + maxDur) / 2));
+      formData.append('clipDurationMode', selectedDurationPreset);
       formData.append('qualityEnhancement', qualityEnhancement);
       formData.append('format', format);
       formData.append('captions', captions);
@@ -387,64 +422,147 @@ export default function HomePage() {
                   gap: '18px',
                 }}
               >
-                {/* Row 1: Duration & Number of Clips */}
+                {/* Row 1: Duration Selection */}
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px', flexWrap: 'wrap', gap: '6px' }}>
+                    <label className="input-label" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <Clock size={15} color="var(--green-accent)" />
+                      Clip Duration
+                    </label>
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                      Individual clip limit: 10 minutes (600s max)
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: selectedDurationPreset === 'custom' ? '12px' : '0' }}>
+                    {DURATION_PRESETS.map((preset) => {
+                      const isSelected = selectedDurationPreset === preset.id;
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          onClick={() => setSelectedDurationPreset(preset.id)}
+                          className={`btn btn-sm ${isSelected ? 'btn-primary' : 'btn-secondary'}`}
+                          style={{
+                            flex: '1 1 calc(25% - 6px)',
+                            minWidth: '105px',
+                            padding: '8px 6px',
+                            fontSize: '12px',
+                            fontWeight: isSelected ? 600 : 400,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '4px',
+                          }}
+                        >
+                          {preset.label}
+                          {preset.isDefault && (
+                            <span style={{ fontSize: '9px', opacity: 0.85, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                              (Default)
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Custom Duration Range Inputs */}
+                  {selectedDurationPreset === 'custom' && (
+                    <div
+                      style={{
+                        background: 'var(--bg-input)',
+                        border: '1px solid var(--border)',
+                        borderRadius: 'var(--radius-sm)',
+                        padding: '14px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '10px',
+                      }}
+                    >
+                      <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                        Specify minimum and maximum clip length (allowed: 15 to 600 seconds):
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                        <div>
+                          <label className="input-label" style={{ fontSize: '11px', marginBottom: '4px' }}>
+                            Minimum Duration (sec)
+                          </label>
+                          <input
+                            type="number"
+                            min="15"
+                            max="600"
+                            placeholder="e.g. 30"
+                            value={customMinDuration}
+                            onChange={(e) => setCustomMinDuration(e.target.value)}
+                            className="input-field"
+                            style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
+                          />
+                        </div>
+
+                        <div>
+                          <label className="input-label" style={{ fontSize: '11px', marginBottom: '4px' }}>
+                            Maximum Duration (sec)
+                          </label>
+                          <input
+                            type="number"
+                            min="15"
+                            max="600"
+                            placeholder="e.g. 90"
+                            value={customMaxDuration}
+                            onChange={(e) => setCustomMaxDuration(e.target.value)}
+                            className="input-field"
+                            style={{ width: '100%', padding: '7px 10px', fontSize: '13px' }}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Real-time custom validation feedback */}
+                      {(() => {
+                        const min = parseInt(customMinDuration, 10);
+                        const max = parseInt(customMaxDuration, 10);
+                        if (!isNaN(min) && (min < 15 || min > 600)) {
+                          return (
+                            <div style={{ fontSize: '11px', color: 'var(--red-accent)' }}>
+                              Minimum duration must be between 15s and 600s.
+                            </div>
+                          );
+                        }
+                        if (!isNaN(max) && (max < 15 || max > 600)) {
+                          return (
+                            <div style={{ fontSize: '11px', color: 'var(--red-accent)' }}>
+                              Maximum duration must be between 15s and 600s (10 min max).
+                            </div>
+                          );
+                        }
+                        if (!isNaN(min) && !isNaN(max) && max < min) {
+                          return (
+                            <div style={{ fontSize: '11px', color: 'var(--red-accent)' }}>
+                              Maximum duration ({max}s) cannot be less than minimum duration ({min}s).
+                            </div>
+                          );
+                        }
+                        if (!isNaN(min) && !isNaN(max)) {
+                          return (
+                            <div style={{ fontSize: '11px', color: 'var(--green-accent)' }}>
+                              Target clip range: {min}s – {max}s
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
+                    </div>
+                  )}
+                </div>
+
+                {/* Row 2: Number of Clips, Format & Captions */}
                 <div
                   style={{
                     display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
                     gap: '16px',
                   }}
                 >
-                  {/* Clip Duration */}
-                  <div>
-                    <label className="input-label" style={{ display: 'block', marginBottom: '8px' }}>
-                      Clip Duration
-                    </label>
-                    <div style={{ display: 'flex', gap: '6px' }}>
-                      {[
-                        { id: '15', label: '15s' },
-                        { id: '30', label: '30s' },
-                        { id: '45', label: '45s' },
-                        { id: '60', label: '60s' },
-                      ].map((d) => (
-                        <button
-                          key={d.id}
-                          type="button"
-                          onClick={() => setClipDurationMode(d.id)}
-                          className={`btn btn-sm ${clipDurationMode === d.id ? 'btn-primary' : 'btn-secondary'}`}
-                          style={{ flex: 1, padding: '6px 0' }}
-                        >
-                          {d.label}
-                        </button>
-                      ))}
-                      <button
-                        type="button"
-                        onClick={() => setClipDurationMode('custom')}
-                        className={`btn btn-sm ${clipDurationMode === 'custom' ? 'btn-primary' : 'btn-secondary'}`}
-                        style={{ padding: '6px 12px' }}
-                      >
-                        Custom
-                      </button>
-                    </div>
-                    {clipDurationMode === 'custom' && (
-                      <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <input
-                          type="number"
-                          min="5"
-                          max="300"
-                          placeholder="e.g. 20"
-                          value={customDuration}
-                          onChange={(e) => setCustomDuration(e.target.value)}
-                          className="input-field"
-                          style={{ padding: '6px 10px', width: '100%' }}
-                        />
-                        <span style={{ fontSize: '12px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                          seconds (5–300s)
-                        </span>
-                      </div>
-                    )}
-                  </div>
-
                   {/* Number of Clips */}
                   <div>
                     <label className="input-label" style={{ display: 'block', marginBottom: '8px' }}>
