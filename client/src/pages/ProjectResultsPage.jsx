@@ -216,7 +216,11 @@ export default function ProjectResultsPage() {
                 </span>
               )}
               <span>Format: {project?.settings?.format || '9:16'}</span>
-              <span>Target Duration: {project?.settings?.clipDuration || 30}s</span>
+              <span>
+                Clip Target: {project?.minClipDuration || project?.settings?.minClipDuration || 60}s –{' '}
+                {project?.maxClipDuration || project?.settings?.maxClipDuration || 90}s
+                {project?.selectedDurationPreset ? ` (${project.selectedDurationPreset})` : ''}
+              </span>
               <span>
                 Enhancement:{' '}
                 {project?.settings?.qualityEnhancement === '1080p' ? (
@@ -407,8 +411,10 @@ export default function ProjectResultsPage() {
                 ? clip.enhancedVideoUrl
                 : clip.videoUrl;
 
-            // Compute exact actual duration
-            const actualDurationSeconds = clip.duration
+            // Compute exact actual duration from generated MP4 file
+            const actualDurationSeconds = clip.actualClipDuration
+              ? Number(clip.actualClipDuration).toFixed(1)
+              : clip.duration
               ? Number(clip.duration).toFixed(1)
               : (clip.endTime - clip.startTime).toFixed(1);
 

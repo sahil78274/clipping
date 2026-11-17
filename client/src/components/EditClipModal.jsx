@@ -31,6 +31,11 @@ export default function EditClipModal({ clip, maxDuration = 300, onClose, onRere
       return;
     }
 
+    if (end - start > 600) {
+      setError('Individual clip duration cannot exceed 10 minutes (600 seconds).');
+      return;
+    }
+
     setLoading(true);
 
     try {

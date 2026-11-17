@@ -39,6 +39,22 @@ const projectSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  minClipDuration: {
+    type: Number,
+    default: 60,
+    min: 15,
+    max: 600
+  },
+  maxClipDuration: {
+    type: Number,
+    default: 90,
+    min: 15,
+    max: 600
+  },
+  selectedDurationPreset: {
+    type: String,
+    default: '60-90s'
+  },
   settings: {
     clipsCount: {
       type: Number,
@@ -46,16 +62,31 @@ const projectSchema = new mongoose.Schema({
       min: 1,
       max: 20
     },
+    minClipDuration: {
+      type: Number,
+      default: 60,
+      min: 15,
+      max: 600
+    },
+    maxClipDuration: {
+      type: Number,
+      default: 90,
+      min: 15,
+      max: 600
+    },
+    selectedDurationPreset: {
+      type: String,
+      default: '60-90s'
+    },
     clipDuration: {
       type: Number,
-      default: 30,
+      default: 75,
       min: 5,
-      max: 300
+      max: 600
     },
     clipDurationMode: {
       type: String,
-      enum: ['15', '30', '45', '60', 'custom'],
-      default: '30'
+      default: '60-90s'
     },
     qualityEnhancement: {
       type: String,

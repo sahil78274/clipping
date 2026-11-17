@@ -17,10 +17,23 @@ const {
   refundCredits,
 } = require('../services/creditService');
 
+// Duration preset lookup map
+const DURATION_PRESETS = {
+  '15-30s': { min: 15, max: 30 },
+  '30-45s': { min: 30, max: 45 },
+  '45-60s': { min: 45, max: 60 },
+  '60-90s': { min: 60, max: 90 },
+  '90-120s': { min: 90, max: 120 },
+  '2-5m': { min: 120, max: 300 },
+  '5-10m': { min: 300, max: 600 },
+};
+
 // Helper to validate and extract YouTube Video ID
 function extractYouTubeId(url) {
   if (!url || typeof url !== 'string') return null;
-  const match = url.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/i);
+  const match = url.match(
+    /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/i
+  );
   return match ? match[1] : null;
 }
 
@@ -58,8 +71,11 @@ async function processProjectAsync(projectId) {
     project.progress = 30;
     await project.save();
 
-    const clipsCount = project.settings.clipsCount || 5;
-    const targetDuration = project.settings.clipDuration || 30;
+    const clipsCount = project.settings?.clipsCount || 5;
+    const minClipDuration = project.minClipDuration || project.settings?.minClipDuration || 60;
+    const maxClipDuration = Math.min(600, project.maxClipDuration || project.settings?.maxClipDuration || 90);
+    const selectedDurationPreset =
+      project.selectedDurationPreset || project.settings?.selectedDurationPreset || '60-90s';
 
     const detectedMoments = await analyzeVideoMoments({
       title: project.title,
@@ -67,7 +83,8 @@ async function processProjectAsync(projectId) {
       duration,
       clipsCount,
       videoPath: sourcePath,
-      targetDuration,
+      minClipDuration,
+      maxClipDuration,
     });
 
     if (!detectedMoments || detectedMoments.length === 0) {
@@ -81,106 +98,130 @@ async function processProjectAsync(projectId) {
 
     const createdClips = [];
     const totalClips = detectedMoments.length;
-    const isQualityEnhancement = project.settings.qualityEnhancement === '1080p';
+    const isQualityEnhancement = project.settings?.qualityEnhancement === '1080p';
 
     for (let i = 0; i < totalClips; i++) {
       const moment = detectedMoments[i];
       const clipIndex = i + 1;
 
-      project.currentStep = `Rendering clip ${clipIndex} of ${totalClips}: "${moment.title}"`;
-      project.progress = Math.min(85, Math.floor(45 + (i / totalClips) * (isQualityEnhancement ? 25 : 45)));
-      await project.save();
+      try {
+        project.currentStep = `Rendering clip ${clipIndex} of ${totalClips}: "${moment.title}"`;
+        project.progress = Math.min(85, Math.floor(45 + (i / totalClips) * (isQualityEnhancement ? 25 : 45)));
+        await project.save();
 
-      const clipFileName = `clip_${project._id}_${clipIndex}_${Date.now()}.mp4`;
-      const thumbFileName = `thumb_${project._id}_${clipIndex}_${Date.now()}.jpg`;
-
-      const outputPath = path.join(outputsDir, clipFileName);
-      const thumbnailPath = path.join(outputsDir, thumbFileName);
-
-      const renderRes = await renderClip({
-        inputPath: sourcePath,
-        outputPath,
-        thumbnailPath,
-        startTime: moment.startTime,
-        endTime: moment.endTime,
-        format: project.settings.format || '9:16',
-        captions: project.settings.captions !== false,
-        title: moment.title,
-      });
-
-      // Verify that rendered file actually exists on disk and is non-empty
-      if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
-        throw new Error(`Failed to render MP4 file for clip ${clipIndex}.`);
-      }
-
-      const clipData = {
-        userId: project.userId,
-        projectId: project._id,
-        title: moment.title,
-        description: moment.description || '',
-        startTime: moment.startTime,
-        endTime: moment.endTime,
-        duration: renderRes.duration,
-        score: moment.score || 85,
-        format: project.settings.format || '9:16',
-        captions: project.settings.captions !== false,
-        resolution: renderRes.resolution || (project.settings.format === '9:16' ? '720x1280' : project.settings.format === '1:1' ? '720x720' : '1280x720'),
-        qualityEnhancement: isQualityEnhancement ? '1080p' : 'original',
-        videoPath: outputPath,
-        videoUrl: `/outputs/${clipFileName}`,
-        thumbnailUrl: fs.existsSync(thumbnailPath) ? `/outputs/${thumbFileName}` : '',
-        fileSize: renderRes.fileSize || 0,
-        status: 'Completed',
-        enhancementStatus: isQualityEnhancement ? 'processing' : 'none',
-      };
-
-      // Step 3b: If 1080p AI Video Quality Enhancement is enabled, run enhancement pipeline
-      if (isQualityEnhancement) {
-        try {
-          project.currentStep = `Enhancing clip ${clipIndex} of ${totalClips} to Full HD (1080p)`;
-          project.progress = Math.min(95, Math.floor(70 + (i / totalClips) * 25));
-          await project.save();
-
-          const enhancedFileName = `clip_${project._id}_${clipIndex}_1080p_${Date.now()}.mp4`;
-          const enhancedOutputPath = path.join(outputsDir, enhancedFileName);
-
-          const enhanceRes = await enhanceClipTo1080p({
-            inputClipPath: outputPath,
-            outputEnhancedPath: enhancedOutputPath,
-            format: project.settings.format || '9:16',
-          });
-
-          clipData.enhancedVideoPath = enhancedOutputPath;
-          clipData.enhancedVideoUrl = `/outputs/${enhancedFileName}`;
-          clipData.enhancedResolution = enhanceRes.resolution;
-          clipData.enhancedFileSize = enhanceRes.fileSize;
-          clipData.enhancementStatus = 'completed';
-        } catch (enhanceErr) {
-          console.error(`Clip ${clipIndex} 1080p enhancement error:`, enhanceErr.message);
-          clipData.enhancementStatus = 'failed';
-          clipData.enhancementError = enhanceErr.message || '1080p enhancement failed';
-          // Original clip is preserved intact!
+        // Enforce strict 600s maximum per individual clip
+        let startTime = Math.max(0, moment.startTime);
+        let endTime = moment.endTime;
+        if (endTime - startTime > 600) {
+          endTime = startTime + 600;
         }
-      }
 
-      const clip = await Clip.create(clipData);
-      createdClips.push(clip);
+        const clipFileName = `clip_${project._id}_${clipIndex}_${Date.now()}.mp4`;
+        const thumbFileName = `thumb_${project._id}_${clipIndex}_${Date.now()}.jpg`;
+
+        const outputPath = path.join(outputsDir, clipFileName);
+        const thumbnailPath = path.join(outputsDir, thumbFileName);
+
+        const renderRes = await renderClip({
+          inputPath: sourcePath,
+          outputPath,
+          thumbnailPath,
+          startTime,
+          endTime,
+          format: project.settings?.format || '9:16',
+          captions: project.settings?.captions !== false,
+          title: moment.title,
+        });
+
+        if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
+          throw new Error(`Failed to render MP4 file for clip ${clipIndex}.`);
+        }
+
+        const actualClipDuration = renderRes.actualClipDuration || renderRes.duration;
+
+        const clipData = {
+          userId: project.userId,
+          projectId: project._id,
+          title: moment.title,
+          description: moment.description || '',
+          startTime,
+          endTime,
+          duration: actualClipDuration,
+          actualClipDuration,
+          minClipDuration,
+          maxClipDuration,
+          selectedDurationPreset,
+          score: moment.score || 85,
+          format: project.settings?.format || '9:16',
+          captions: project.settings?.captions !== false,
+          resolution:
+            renderRes.resolution ||
+            (project.settings?.format === '9:16' ? '720x1280' : '1280x720'),
+          qualityEnhancement: isQualityEnhancement ? '1080p' : 'original',
+          videoPath: outputPath,
+          videoUrl: `/outputs/${clipFileName}`,
+          thumbnailUrl: fs.existsSync(thumbnailPath) ? `/outputs/${thumbFileName}` : '',
+          fileSize: renderRes.fileSize || 0,
+          status: 'Completed',
+          enhancementStatus: isQualityEnhancement ? 'processing' : 'none',
+        };
+
+        // Optional 1080p Full HD enhancement
+        if (isQualityEnhancement) {
+          try {
+            project.currentStep = `Enhancing clip ${clipIndex} of ${totalClips} to Full HD (1080p)`;
+            project.progress = Math.min(95, Math.floor(70 + (i / totalClips) * 25));
+            await project.save();
+
+            const enhancedFileName = `clip_${project._id}_${clipIndex}_1080p_${Date.now()}.mp4`;
+            const enhancedOutputPath = path.join(outputsDir, enhancedFileName);
+
+            const enhanceRes = await enhanceClipTo1080p({
+              inputClipPath: outputPath,
+              outputEnhancedPath: enhancedOutputPath,
+              format: project.settings?.format || '9:16',
+            });
+
+            clipData.enhancedVideoPath = enhancedOutputPath;
+            clipData.enhancedVideoUrl = `/outputs/${enhancedFileName}`;
+            clipData.enhancedResolution = enhanceRes.resolution;
+            clipData.enhancedFileSize = enhanceRes.fileSize;
+            clipData.enhancementStatus = 'completed';
+          } catch (enhanceErr) {
+            console.error(`Clip ${clipIndex} 1080p enhancement error:`, enhanceErr.message);
+            clipData.enhancementStatus = 'failed';
+            clipData.enhancementError = enhanceErr.message || '1080p enhancement failed';
+          }
+        }
+
+        const clip = await Clip.create(clipData);
+        createdClips.push(clip);
+      } catch (clipErr) {
+        console.error(`[Project ${projectId}] Error processing clip ${clipIndex}:`, clipErr.message);
+        // Preserve successfully generated clips even if one fails!
+      }
     }
 
     if (createdClips.length === 0) {
       throw new Error('No clips could be successfully rendered.');
     }
 
-    // Step 4: Finalize project & permanently deduct credits
+    // Step 4: Finalize project & calculate accurate credit deduction
+    const creditsToKeep = calculateCost(createdClips.length);
+    const creditsToRefund = Math.max(0, creditsToDeduct - creditsToKeep);
+
     project.status = 'Completed';
     project.progress = 100;
     project.currentStep = isQualityEnhancement
-      ? 'All clips generated and enhanced to 1080p successfully'
-      : 'All clips generated successfully';
-    project.creditsDeducted = creditsToDeduct;
+      ? `${createdClips.length} clips generated and enhanced to 1080p successfully`
+      : `${createdClips.length} clips generated successfully`;
+    project.creditsDeducted = creditsToKeep;
     await project.save();
 
-    await finalizeCredits(userId, creditsToDeduct, project._id, createdClips.length);
+    if (creditsToRefund > 0) {
+      await refundCredits(userId, creditsToRefund, project._id, 'Refund for unrendered clip moments');
+    }
+    await finalizeCredits(userId, creditsToKeep, project._id, createdClips.length);
     console.log(`[Project ${projectId}] Completed successfully with ${createdClips.length} genuine clips.`);
   } catch (err) {
     console.error(`[Project ${projectId}] Processing failed:`, err.message);
@@ -204,8 +245,11 @@ const createProject = async (req, res) => {
       youtubeUrl,
       title,
       clipsCount = 5,
-      clipDuration = 30,
-      clipDurationMode = '30',
+      minClipDuration,
+      maxClipDuration,
+      selectedDurationPreset,
+      clipDuration,
+      clipDurationMode,
       qualityEnhancement = 'original',
       format = '9:16',
       captions = true,
@@ -258,31 +302,61 @@ const createProject = async (req, res) => {
       });
     }
 
-    // Validate and process clip duration setting
-    const validDurationModes = ['15', '30', '45', '60', 'custom'];
-    const chosenDurationMode = validDurationModes.includes(clipDurationMode) ? clipDurationMode : '30';
-    let targetClipDuration = 30;
+    // Parse Duration Preset and Min/Max Duration
+    let min = 60;
+    let max = 90;
+    let preset = selectedDurationPreset || clipDurationMode || '60-90s';
 
-    if (chosenDurationMode === 'custom') {
-      const parsedCustom = parseInt(clipDuration, 10);
-      if (isNaN(parsedCustom) || parsedCustom < 5 || parsedCustom > 300) {
-        try { fs.unlinkSync(sourcePath); } catch (e) {}
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid custom clip duration. Please enter a value between 5 and 300 seconds.',
-        });
-      }
-      targetClipDuration = parsedCustom;
+    if (preset === 'custom' || (!preset && minClipDuration && maxClipDuration)) {
+      preset = 'custom';
+      min = parseInt(minClipDuration, 10);
+      max = parseInt(maxClipDuration, 10);
+    } else if (DURATION_PRESETS[preset]) {
+      min = DURATION_PRESETS[preset].min;
+      max = DURATION_PRESETS[preset].max;
+    } else if (clipDuration) {
+      // Backwards compatibility with previous single duration value
+      const parsedDur = parseInt(clipDuration, 10) || 30;
+      min = Math.max(15, parsedDur - 5);
+      max = Math.min(600, parsedDur + 5);
+      preset = 'custom';
     } else {
-      targetClipDuration = parseInt(chosenDurationMode, 10) || 30;
+      min = 60;
+      max = 90;
+      preset = '60-90s';
     }
 
-    // Gracefully handle source video too short for requested duration
-    if (videoDuration < targetClipDuration) {
+    // Strict validation
+    if (isNaN(min) || min < 15 || min > 600) {
       try { fs.unlinkSync(sourcePath); } catch (e) {}
       return res.status(400).json({
         success: false,
-        message: `Source video duration (${Math.round(videoDuration)}s) is shorter than the requested clip duration (${targetClipDuration}s). Please select a shorter clip duration or upload a longer video.`,
+        message: 'Minimum clip duration must be between 15 and 600 seconds.',
+      });
+    }
+
+    if (isNaN(max) || max < 15 || max > 600) {
+      try { fs.unlinkSync(sourcePath); } catch (e) {}
+      return res.status(400).json({
+        success: false,
+        message: 'Maximum clip duration must be between 15 and 600 seconds (10 minutes maximum).',
+      });
+    }
+
+    if (max < min) {
+      try { fs.unlinkSync(sourcePath); } catch (e) {}
+      return res.status(400).json({
+        success: false,
+        message: 'Maximum duration must be greater than or equal to minimum duration.',
+      });
+    }
+
+    // Handle source video shorter than selected duration
+    if (videoDuration < min) {
+      try { fs.unlinkSync(sourcePath); } catch (e) {}
+      return res.status(400).json({
+        success: false,
+        message: `Source video duration (${Math.round(videoDuration)}s) is shorter than the minimum requested clip duration (${min}s). Please select a shorter duration preset or upload a longer video.`,
       });
     }
 
@@ -323,10 +397,16 @@ const createProject = async (req, res) => {
       progress: 0,
       currentStep: 'Queued in processing pipeline',
       videoDuration,
+      minClipDuration: min,
+      maxClipDuration: max,
+      selectedDurationPreset: preset,
       settings: {
         clipsCount: parsedClipsCount,
-        clipDuration: targetClipDuration,
-        clipDurationMode: chosenDurationMode,
+        minClipDuration: min,
+        maxClipDuration: max,
+        selectedDurationPreset: preset,
+        clipDuration: Math.round((min + max) / 2),
+        clipDurationMode: preset,
         qualityEnhancement: chosenEnhancement,
         format: chosenFormat,
         captions: isCaptions,
