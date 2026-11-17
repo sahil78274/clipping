@@ -4,6 +4,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import EditClipModal from '../components/EditClipModal';
 import LoadingSpinner from '../components/LoadingSpinner';
+import { downloadFile, getAuthenticatedDownloadUrl } from '../utils/downloadHelper';
 import {
   Download,
   FolderArchive,
@@ -30,8 +31,22 @@ export default function ProjectResultsPage() {
   const [editingClip, setEditingClip] = useState(null);
   const [previewMode, setPreviewMode] = useState({}); // { [clipId]: 'original' | '1080p' }
   const [enhancingClipIds, setEnhancingClipIds] = useState(new Set());
+  const [downloadingKey, setDownloadingKey] = useState('');
 
   const pollIntervalRef = useRef(null);
+
+  const handleDownloadClick = async (e, endpoint, fallbackFilename, key) => {
+    e.preventDefault();
+    setError('');
+    setDownloadingKey(key);
+    try {
+      await downloadFile(endpoint, fallbackFilename);
+    } catch (err) {
+      setError(err.message || 'Failed to download file.');
+    } finally {
+      setDownloadingKey('');
+    }
+  };
 
   const fetchProjectData = async () => {
     try {
@@ -239,22 +254,42 @@ export default function ProjectResultsPage() {
             {isCompleted && clips.length > 0 && (
               <>
                 <a
-                  href={`/api/clips/download-all/${project._id}`}
+                  href={getAuthenticatedDownloadUrl(`/api/clips/download-all/${project._id}`)}
+                  onClick={(e) =>
+                    handleDownloadClick(
+                      e,
+                      `/clips/download-all/${project._id}`,
+                      `${(project.title || 'project').replace(/[^a-zA-Z0-9_-]/g, '_')}_clips.zip`,
+                      'zip_all'
+                    )
+                  }
                   className="btn btn-secondary"
                   download
+                  title="Download all generated clips as a ZIP archive"
                 >
                   <FolderArchive size={16} />
-                  Download All (ZIP)
+                  {downloadingKey === 'zip_all' ? 'Downloading...' : 'Download All (ZIP)'}
                 </a>
 
                 {hasEnhancedClips && (
                   <a
-                    href={`/api/clips/download-all/${project._id}?quality=1080p`}
+                    href={getAuthenticatedDownloadUrl(
+                      `/api/clips/download-all/${project._id}?quality=1080p`
+                    )}
+                    onClick={(e) =>
+                      handleDownloadClick(
+                        e,
+                        `/clips/download-all/${project._id}?quality=1080p`,
+                        `${(project.title || 'project').replace(/[^a-zA-Z0-9_-]/g, '_')}_1080p_clips.zip`,
+                        'zip_1080p'
+                      )
+                    }
                     className="btn btn-primary"
                     download
+                    title="Download all enhanced 1080p Full HD clips as a ZIP archive"
                   >
                     <Sparkles size={16} />
-                    Download All 1080p (ZIP)
+                    {downloadingKey === 'zip_1080p' ? 'Downloading...' : 'Download All 1080p (ZIP)'}
                   </a>
                 )}
               </>
@@ -678,33 +713,65 @@ export default function ProjectResultsPage() {
                       {isEnhanced ? (
                         <>
                           <a
-                            href={`/api/clips/download-enhanced/${clip._id}`}
+                            href={getAuthenticatedDownloadUrl(
+                              `/api/clips/download-enhanced/${clip._id}`
+                            )}
+                            onClick={(e) =>
+                              handleDownloadClick(
+                                e,
+                                `/clips/download-enhanced/${clip._id}`,
+                                `${(clip.title || 'clip').replace(/[^a-zA-Z0-9_-]/g, '_')}_1080p.mp4`,
+                                `${clip._id}_1080p`
+                              )
+                            }
                             className="btn btn-primary btn-sm"
                             style={{ flex: 1 }}
                             download
                             title={`Download 1080p Full HD (${clip.enhancedResolution || '1080x1920'})`}
                           >
                             <Sparkles size={14} />
-                            Download 1080p
+                            {downloadingKey === `${clip._id}_1080p`
+                              ? 'Downloading...'
+                              : 'Download 1080p'}
                           </a>
                           <a
-                            href={`/api/clips/download/${clip._id}`}
+                            href={getAuthenticatedDownloadUrl(`/api/clips/download/${clip._id}`)}
+                            onClick={(e) =>
+                              handleDownloadClick(
+                                e,
+                                `/clips/download/${clip._id}`,
+                                `${(clip.title || 'clip').replace(/[^a-zA-Z0-9_-]/g, '_')}_720p.mp4`,
+                                `${clip._id}_720p`
+                              )
+                            }
                             className="btn btn-secondary btn-sm"
                             download
                             title="Download original 720p version"
                           >
-                            <Download size={14} /> 720p
+                            <Download size={14} />{' '}
+                            {downloadingKey === `${clip._id}_720p` ? '...' : '720p'}
                           </a>
                         </>
                       ) : (
                         <a
-                          href={`/api/clips/download/${clip._id}`}
+                          href={getAuthenticatedDownloadUrl(`/api/clips/download/${clip._id}`)}
+                          onClick={(e) =>
+                            handleDownloadClick(
+                              e,
+                              `/clips/download/${clip._id}`,
+                              `${(clip.title || 'clip').replace(/[^a-zA-Z0-9_-]/g, '_')}.mp4`,
+                              clip._id
+                            )
+                          }
                           className="btn btn-primary btn-sm"
                           style={{ flex: 1 }}
                           download
+                          title={`Download MP4 (${clip.resolution || '720p'})`}
                         >
                           <Download size={14} />
-                          Download MP4 ({clip.resolution || '720p'})
+                          {downloadingKey === clip._id
+                            ? 'Downloading...'
+                            : `Download MP4 (${clip.resolution || '720p'})`}
                         </a>
                       )}
 

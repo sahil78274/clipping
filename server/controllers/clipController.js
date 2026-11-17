@@ -4,7 +4,12 @@ const fs = require('fs');
 const archiver = require('archiver');
 const Clip = require('../models/Clip');
 const Project = require('../models/Project');
-const { renderClip, enhanceClipTo1080p, outputsDir } = require('../services/videoProcessor');
+const {
+  renderClip,
+  enhanceClipTo1080p,
+  resolveVideoFilePath,
+  outputsDir,
+} = require('../services/videoProcessor');
 
 // GET /api/clips - Get all clips for current user (My Clips page)
 const getAllUserClips = async (req, res) => {
@@ -13,8 +18,18 @@ const getAllUserClips = async (req, res) => {
       .populate('projectId', 'title youtubeUrl status settings')
       .sort({ createdAt: -1 });
 
-    // Only return clips that actually exist on disk
-    const verifiedClips = clips.filter((c) => c.videoPath && fs.existsSync(c.videoPath));
+    // Verify clips actually exist on server storage
+    const verifiedClips = [];
+    for (const clip of clips) {
+      const resolved = resolveVideoFilePath(clip.videoPath, clip.videoUrl);
+      if (resolved) {
+        if (clip.videoPath !== resolved) {
+          clip.videoPath = resolved;
+          clip.save().catch(() => {});
+        }
+        verifiedClips.push(clip);
+      }
+    }
 
     return res.status(200).json({
       success: true,
@@ -39,7 +54,17 @@ const getClipsByProject = async (req, res) => {
     }
 
     const clips = await Clip.find({ projectId }).sort({ startTime: 1 });
-    const verifiedClips = clips.filter((c) => c.videoPath && fs.existsSync(c.videoPath));
+    const verifiedClips = [];
+    for (const clip of clips) {
+      const resolved = resolveVideoFilePath(clip.videoPath, clip.videoUrl);
+      if (resolved) {
+        if (clip.videoPath !== resolved) {
+          clip.videoPath = resolved;
+          clip.save().catch(() => {});
+        }
+        verifiedClips.push(clip);
+      }
+    }
 
     return res.status(200).json({
       success: true,
@@ -58,45 +83,101 @@ const downloadClip = async (req, res) => {
 
     const clip = await Clip.findById(clipId);
     if (!clip) {
-      return res.status(404).json({ success: false, message: 'Clip not found.' });
+      return res.status(404).json({
+        success: false,
+        message: 'Clip not found in database.',
+      });
     }
 
+    // Verify user ownership before allowing downloads
     if (clip.userId.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
-      return res.status(403).json({ success: false, message: 'Access denied.' });
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. You do not have permission to download this clip.',
+      });
+    }
+
+    const is1080p = quality === '1080p' || quality === 'enhanced';
+    let targetPath = is1080p ? clip.enhancedVideoPath : clip.videoPath;
+    let targetUrl = is1080p ? clip.enhancedVideoUrl : clip.videoUrl;
+
+    if (is1080p && !targetPath && !targetUrl) {
+      return res.status(404).json({
+        success: false,
+        message: 'Enhanced 1080p Full HD version is not available for this clip.',
+      });
+    }
+
+    // Resolve cross-platform file path (handles Windows backslashes, relative paths, outputsDir)
+    const resolvedPath = resolveVideoFilePath(targetPath, targetUrl);
+
+    if (!resolvedPath || !fs.existsSync(resolvedPath)) {
+      const typeLabel = is1080p ? 'Enhanced 1080p' : 'Original 720p';
+      return res.status(404).json({
+        success: false,
+        message: `${typeLabel} video file not found on server storage.`,
+      });
+    }
+
+    // Verify file is a valid non-empty regular file
+    let stat;
+    try {
+      stat = fs.statSync(resolvedPath);
+      if (!stat.isFile() || stat.size === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'Clip video file on server is invalid or 0 bytes.',
+        });
+      }
+    } catch (statErr) {
+      return res.status(404).json({
+        success: false,
+        message: 'Unable to read clip video file from server storage.',
+      });
+    }
+
+    // Heal database path if it was recorded differently (e.g. Windows separators)
+    if (is1080p) {
+      if (clip.enhancedVideoPath !== resolvedPath) {
+        clip.enhancedVideoPath = resolvedPath;
+        clip.save().catch(() => {});
+      }
+    } else {
+      if (clip.videoPath !== resolvedPath) {
+        clip.videoPath = resolvedPath;
+        clip.save().catch(() => {});
+      }
     }
 
     const safeTitle = (clip.title || 'clip').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const downloadFilename = is1080p
+      ? `${safeTitle}_1080p.mp4`
+      : `${safeTitle}_${(clip.format || '9:16').replace(':', 'x')}.mp4`;
 
-    // If enhanced 1080p version is requested
-    if (quality === '1080p' || quality === 'enhanced') {
-      if (!clip.enhancedVideoPath || !fs.existsSync(clip.enhancedVideoPath)) {
-        return res.status(404).json({
-          success: false,
-          message: 'Enhanced 1080p Full HD version is not available for this clip.',
-        });
-      }
-
-      const downloadName = `${safeTitle}_1080p.mp4`;
-      res.setHeader('Content-Type', 'video/mp4');
-      res.setHeader('Content-Disposition', `attachment; filename="${downloadName}"`);
-
-      const fileStream = fs.createReadStream(clip.enhancedVideoPath);
-      return fileStream.pipe(res);
-    }
-
-    // Default: Original clip
-    if (!fs.existsSync(clip.videoPath)) {
-      return res.status(404).json({ success: false, message: 'Clip file is not found on disk.' });
-    }
-
-    const downloadName = `${safeTitle}_${(clip.format || '9:16').replace(':', 'x')}.mp4`;
+    // Set correct Content-Type: video/mp4 and Content-Disposition headers
     res.setHeader('Content-Type', 'video/mp4');
-    res.setHeader('Content-Disposition', `attachment; filename="${downloadName}"`);
+    res.setHeader('Content-Length', stat.size);
+    res.setHeader('Content-Disposition', `attachment; filename="${downloadFilename}"`);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'no-cache');
 
-    const fileStream = fs.createReadStream(clip.videoPath);
+    const fileStream = fs.createReadStream(resolvedPath);
+    fileStream.on('error', (streamErr) => {
+      console.error('[ClipController] Streaming error:', streamErr);
+      if (!res.headersSent) {
+        res.status(500).json({ success: false, message: 'Failed to stream video file.' });
+      }
+    });
+
     fileStream.pipe(res);
   } catch (err) {
-    return res.status(500).json({ success: false, message: err.message });
+    console.error('[ClipController] Download clip error:', err);
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
+        message: err.message || 'Internal server error downloading clip.',
+      });
+    }
   }
 };
 
@@ -119,12 +200,14 @@ const enhanceClip = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Access denied.' });
     }
 
-    if (!clip.videoPath || !fs.existsSync(clip.videoPath)) {
+    const originalPath = resolveVideoFilePath(clip.videoPath, clip.videoUrl);
+    if (!originalPath || !fs.existsSync(originalPath)) {
       return res.status(400).json({ success: false, message: 'Original clip file not found on disk.' });
     }
 
     // If already enhanced and file exists, return directly
-    if (clip.enhancementStatus === 'completed' && clip.enhancedVideoPath && fs.existsSync(clip.enhancedVideoPath)) {
+    const existingEnhanced = resolveVideoFilePath(clip.enhancedVideoPath, clip.enhancedVideoUrl);
+    if (clip.enhancementStatus === 'completed' && existingEnhanced) {
       return res.status(200).json({
         success: true,
         message: 'Clip is already enhanced to 1080p.',
@@ -132,7 +215,7 @@ const enhanceClip = async (req, res) => {
       });
     }
 
-    const enhancedFileName = path.basename(clip.videoPath).replace('.mp4', '_1080p.mp4');
+    const enhancedFileName = path.basename(originalPath).replace('.mp4', '_1080p.mp4');
     const enhancedOutputPath = path.join(outputsDir, enhancedFileName);
 
     clip.enhancementStatus = 'processing';
@@ -140,7 +223,7 @@ const enhanceClip = async (req, res) => {
 
     try {
       const enhanceRes = await enhanceClipTo1080p({
-        inputClipPath: clip.videoPath,
+        inputClipPath: originalPath,
         outputEnhancedPath: enhancedOutputPath,
         format: clip.format || '9:16',
       });
@@ -194,13 +277,39 @@ const downloadAllClipsAsZip = async (req, res) => {
       projectId,
       status: { $in: ['Completed', 'completed'] },
     });
-    const verifiedClips = clips.filter((c) => c.videoPath && fs.existsSync(c.videoPath));
-
-    if (!verifiedClips || verifiedClips.length === 0) {
-      return res.status(400).json({ success: false, message: 'No completed clips available for download.' });
-    }
 
     const wantEnhanced = quality === '1080p' || quality === 'enhanced';
+
+    // Verify each clip exists on disk using resolveVideoFilePath
+    const validClipsWithPaths = [];
+    for (let i = 0; i < clips.length; i++) {
+      const clip = clips[i];
+      let chosenPath = null;
+      let label = (clip.format || '9:16').replace(':', 'x');
+
+      if (wantEnhanced && (clip.enhancedVideoPath || clip.enhancedVideoUrl)) {
+        chosenPath = resolveVideoFilePath(clip.enhancedVideoPath, clip.enhancedVideoUrl);
+        label = '1080p';
+      }
+
+      // Fallback to original if 1080p not found or not requested
+      if (!chosenPath) {
+        chosenPath = resolveVideoFilePath(clip.videoPath, clip.videoUrl);
+        label = (clip.format || '9:16').replace(':', 'x');
+      }
+
+      if (chosenPath && fs.existsSync(chosenPath)) {
+        validClipsWithPaths.push({ clip, path: chosenPath, label });
+      }
+    }
+
+    if (validClipsWithPaths.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No completed video clip files are available on server storage for download.',
+      });
+    }
+
     const safeProjectName = (project.title || 'clipping_project').replace(/[^a-zA-Z0-9_-]/g, '_');
     const zipName = wantEnhanced ? `${safeProjectName}_1080p_clips.zip` : `${safeProjectName}_clips.zip`;
 
@@ -211,31 +320,22 @@ const downloadAllClipsAsZip = async (req, res) => {
     archive.pipe(res);
 
     archive.on('error', (err) => {
-      console.error('Archiver error:', err);
-      res.status(500).end();
+      console.error('[ClipController] Archiver error:', err);
+      if (!res.headersSent) res.status(500).end();
     });
 
-    for (let i = 0; i < verifiedClips.length; i++) {
-      const clip = verifiedClips[i];
-      const safeTitle = (clip.title || `clip_${i + 1}`).replace(/[^a-zA-Z0-9_-]/g, '_');
-
-      // Use enhanced path if requested and available, else original
-      let filePathToZip = clip.videoPath;
-      let label = (clip.format || '9:16').replace(':', 'x');
-
-      if (wantEnhanced && clip.enhancedVideoPath && fs.existsSync(clip.enhancedVideoPath)) {
-        filePathToZip = clip.enhancedVideoPath;
-        label = '1080p';
-      }
-
-      const clipFileName = `${i + 1}_${safeTitle}_${label}.mp4`;
-      archive.file(filePathToZip, { name: clipFileName });
-    }
+    validClipsWithPaths.forEach(({ clip, path: filePath, label }, index) => {
+      const safeTitle = (clip.title || `clip_${index + 1}`).replace(/[^a-zA-Z0-9_-]/g, '_');
+      const clipFileName = `${index + 1}_${safeTitle}_${label}.mp4`;
+      archive.file(filePath, { name: clipFileName });
+    });
 
     await archive.finalize();
   } catch (err) {
-    console.error('Download all ZIP error:', err);
-    return res.status(500).json({ success: false, message: err.message });
+    console.error('[ClipController] Download all ZIP error:', err);
+    if (!res.headersSent) {
+      return res.status(500).json({ success: false, message: err.message });
+    }
   }
 };
 
@@ -283,11 +383,13 @@ const rerenderClip = async (req, res) => {
     const newThumbnailPath = path.join(outputsDir, newThumbFileName);
 
     // Delete old files if they exist
-    if (clip.videoPath && fs.existsSync(clip.videoPath)) {
-      try { fs.unlinkSync(clip.videoPath); } catch (e) {}
+    const oldPath = resolveVideoFilePath(clip.videoPath, clip.videoUrl);
+    if (oldPath && fs.existsSync(oldPath)) {
+      try { fs.unlinkSync(oldPath); } catch (e) {}
     }
-    if (clip.enhancedVideoPath && fs.existsSync(clip.enhancedVideoPath)) {
-      try { fs.unlinkSync(clip.enhancedVideoPath); } catch (e) {}
+    const oldEnhanced = resolveVideoFilePath(clip.enhancedVideoPath, clip.enhancedVideoUrl);
+    if (oldEnhanced && fs.existsSync(oldEnhanced)) {
+      try { fs.unlinkSync(oldEnhanced); } catch (e) {}
       clip.enhancedVideoPath = '';
       clip.enhancedVideoUrl = '';
       clip.enhancementStatus = 'none';
@@ -366,11 +468,13 @@ const deleteClip = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Access denied.' });
     }
 
-    if (clip.videoPath && fs.existsSync(clip.videoPath)) {
-      try { fs.unlinkSync(clip.videoPath); } catch (e) {}
+    const origPath = resolveVideoFilePath(clip.videoPath, clip.videoUrl);
+    if (origPath && fs.existsSync(origPath)) {
+      try { fs.unlinkSync(origPath); } catch (e) {}
     }
-    if (clip.enhancedVideoPath && fs.existsSync(clip.enhancedVideoPath)) {
-      try { fs.unlinkSync(clip.enhancedVideoPath); } catch (e) {}
+    const enhPath = resolveVideoFilePath(clip.enhancedVideoPath, clip.enhancedVideoUrl);
+    if (enhPath && fs.existsSync(enhPath)) {
+      try { fs.unlinkSync(enhPath); } catch (e) {}
     }
 
     await Clip.findByIdAndDelete(clipId);

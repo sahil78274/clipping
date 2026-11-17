@@ -8,6 +8,7 @@ const {
   getVideoMetadata,
   renderClip,
   enhanceClipTo1080p,
+  resolveVideoFilePath,
   outputsDir,
 } = require('../services/videoProcessor');
 const {
@@ -448,11 +449,11 @@ const getProjects = async (req, res) => {
       .lean();
 
     const projectIds = projects.map((p) => p._id);
-    const clips = await Clip.find({ projectId: { $in: projectIds } }, 'projectId status videoPath').lean();
+    const clips = await Clip.find({ projectId: { $in: projectIds } }, 'projectId status videoPath videoUrl').lean();
 
     const clipCounts = {};
     for (const c of clips) {
-      if (fs.existsSync(c.videoPath)) {
+      if (resolveVideoFilePath(c.videoPath, c.videoUrl)) {
         clipCounts[c.projectId] = (clipCounts[c.projectId] || 0) + 1;
       }
     }
@@ -484,7 +485,7 @@ const getProjectById = async (req, res) => {
     }
 
     const clips = await Clip.find({ projectId: project._id }).sort({ startTime: 1 });
-    const verifiedClips = clips.filter((c) => c.videoPath && fs.existsSync(c.videoPath));
+    const verifiedClips = clips.filter((c) => resolveVideoFilePath(c.videoPath, c.videoUrl));
 
     return res.status(200).json({
       success: true,
