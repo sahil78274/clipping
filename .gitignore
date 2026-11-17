@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+.volter/
+
+# Environment Variables
+.env
+.env.local
+.env.production
+
+# Build Outputs
+dist/
+build/
+
+# Media Uploads & Outputs (temporary artifacts)
+server/uploads/*.mp4
+server/uploads/*.mov
+server/uploads/*.webm
+server/uploads/*.mkv
+server/uploads/*.avi
+server/outputs/*.mp4
+server/outputs/*.jpg
+server/outputs/*.jpeg
+server/outputs/*.zip
+!server/uploads/.gitkeep
+!server/outputs/.gitkeep
+
+# Logs & Cache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+*.log
