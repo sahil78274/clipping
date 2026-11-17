@@ -128,7 +128,7 @@ export default function EditClipModal({ clip, maxDuration = 300, onClose, onRere
           >
             <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Calculated Duration:</span>
             <span style={{ fontSize: '14px', fontWeight: 700, color: 'var(--green-accent)' }}>
-              {duration}s
+              {duration.toFixed(1)}s
             </span>
           </div>
 

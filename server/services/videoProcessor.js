@@ -81,12 +81,16 @@ function getVideoMetadata(filePath) {
 }
 
 /**
- * Detects real scene transition timestamps or audio activity from the actual video file
+ * Detects real scene transition timestamps or audio activity from the actual video file,
+ * aligning with requested targetDuration and clipsCount.
  */
-function detectVideoMoments(filePath, duration, count = 5) {
+function detectVideoMoments(filePath, duration, count = 5, targetDuration = 30) {
   return new Promise((resolve) => {
-    const targetCount = Math.max(1, Math.min(count, Math.floor(duration / 5)));
-    const clipLength = Math.min(45, Math.max(10, Math.floor(duration / targetCount)));
+    const safeDuration = Math.max(3, Math.floor(duration));
+    const effectiveTargetDuration = Math.min(safeDuration, Math.max(3, Math.floor(targetDuration)));
+    const maxPossibleClips = Math.max(1, Math.floor(safeDuration / effectiveTargetDuration));
+    const targetCount = Math.min(count, maxPossibleClips);
+    const clipLength = effectiveTargetDuration;
 
     // Attempt detecting scene cuts with ffmpeg
     const scenePoints = [];
@@ -98,34 +102,36 @@ function detectVideoMoments(filePath, duration, count = 5) {
         const match = line.match(/pts_time:([0-9.]+)/);
         if (match) {
           const t = parseFloat(match[1]);
-          if (!isNaN(t) && t > 1 && t < duration - 5) {
+          if (!isNaN(t) && t >= 0 && t <= safeDuration - 2) {
             scenePoints.push(Math.round(t));
           }
         }
       })
       .on('end', () => {
-        resolve(buildMomentsFromPoints(scenePoints, duration, targetCount, clipLength));
+        resolve(buildMomentsFromPoints(scenePoints, safeDuration, targetCount, clipLength));
       })
       .on('error', () => {
         // Fallback to proportional division of the real video timeline
-        resolve(buildMomentsFromPoints([], duration, targetCount, clipLength));
+        resolve(buildMomentsFromPoints([], safeDuration, targetCount, clipLength));
       })
       .run();
   });
 }
 
-function buildMomentsFromPoints(points, duration, targetCount, clipLength) {
+function buildMomentsFromPoints(points, safeDuration, targetCount, clipLength) {
   const moments = [];
-  const safeDuration = Math.max(5, Math.floor(duration));
 
   if (points.length >= targetCount) {
     // Pick evenly spaced scene cut points
     const step = points.length / targetCount;
     for (let i = 0; i < targetCount; i++) {
       const cut = points[Math.floor(i * step)];
-      const start = Math.max(0, cut);
-      const end = Math.min(safeDuration, start + clipLength);
-      if (end - start >= 5) {
+      let start = Math.max(0, cut);
+      let end = Math.min(safeDuration, start + clipLength);
+      if (end - start < clipLength && start > 0) {
+        start = Math.max(0, end - clipLength);
+      }
+      if (end - start >= 3) {
         moments.push({
           startTime: start,
           endTime: end,
@@ -139,12 +145,14 @@ function buildMomentsFromPoints(points, duration, targetCount, clipLength) {
   // If scene detection yielded fewer points than requested, space across real timeline
   if (moments.length < targetCount) {
     const remaining = targetCount - moments.length;
-    const interval = safeDuration / (remaining + 1);
+    const interval = Math.max(0, (safeDuration - clipLength) / Math.max(1, remaining + 1));
     for (let i = 0; i < remaining; i++) {
-      const center = Math.floor(interval * (i + 1));
-      const start = Math.max(0, center - Math.floor(clipLength / 2));
-      const end = Math.min(safeDuration, start + clipLength);
-      if (end - start >= 5) {
+      let start = Math.max(0, Math.floor(interval * (i + 1)));
+      let end = Math.min(safeDuration, start + clipLength);
+      if (end - start < clipLength && start > 0) {
+        start = Math.max(0, end - clipLength);
+      }
+      if (end - start >= 3) {
         moments.push({
           startTime: start,
           endTime: end,
@@ -153,6 +161,17 @@ function buildMomentsFromPoints(points, duration, targetCount, clipLength) {
         });
       }
     }
+  }
+
+  // Fallback: at least 1 moment spanning up to clipLength
+  if (moments.length === 0) {
+    const end = Math.min(safeDuration, clipLength);
+    moments.push({
+      startTime: 0,
+      endTime: end,
+      duration: end,
+      score: 88,
+    });
   }
 
   // Ensure sorted by start time and non-overlapping
@@ -212,16 +231,20 @@ function renderClip({
 
     // Build video filter chain for aspect ratio
     const filters = [];
+    let resolution = '720x1280';
 
     if (format === '9:16') {
       // Smart crop to 9:16 center, then scale to 720x1280
       filters.push('crop=ih*9/16:ih:(iw-ih*9/16)/2:0', 'scale=720:1280:flags=lanczos');
+      resolution = '720x1280';
     } else if (format === '1:1') {
       // Smart crop to 1:1 center, then scale to 720x720
       filters.push('crop=min(iw\\,ih):min(iw\\,ih):(iw-min(iw\\,ih))/2:(ih-min(iw\\,ih))/2', 'scale=720:720:flags=lanczos');
+      resolution = '720x720';
     } else {
       // 16:9 standard
       filters.push('scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black');
+      resolution = '1280x720';
     }
 
     // Burn-in captions/hook overlay if captions enabled
@@ -278,6 +301,7 @@ function renderClip({
             outputPath,
             duration,
             fileSize: stats.size,
+            resolution,
           });
         } catch (postErr) {
           reject(postErr);
@@ -292,11 +316,103 @@ function renderClip({
   });
 }
 
+/**
+ * Enhances a generated clip to 1080p Full HD using an FFmpeg enhancement pipeline:
+ * - High-fidelity Lanczos upscaling to 1080p (1080x1920 for 9:16, 1920x1080 for 16:9, 1080x1080 for 1:1)
+ * - 3D spatial and temporal noise reduction (hqdn3d)
+ * - Detail and edge unsharp mask sharpening (unsharp)
+ * - High-bitrate master H.264 encoding (CRF 18)
+ * - Preserves audio sync and audio quality
+ * Saves enhanced MP4 to a separate file, never overwriting the original.
+ */
+function enhanceClipTo1080p({ inputClipPath, outputEnhancedPath, format = '9:16' }) {
+  return new Promise((resolve, reject) => {
+    if (!inputClipPath || !fs.existsSync(inputClipPath)) {
+      return reject(new Error(`Original clip file not found for enhancement: ${inputClipPath}`));
+    }
+
+    let targetWidth = 1080;
+    let targetHeight = 1920;
+
+    if (format === '16:9') {
+      targetWidth = 1920;
+      targetHeight = 1080;
+    } else if (format === '1:1') {
+      targetWidth = 1080;
+      targetHeight = 1080;
+    } else {
+      // 9:16 portrait
+      targetWidth = 1080;
+      targetHeight = 1920;
+    }
+
+    // Enhancement filter chain:
+    // 1. Noise reduction: hqdn3d (cleans noise without blurring edges)
+    // 2. Lanczos scaling to 1080p target resolution
+    // 3. Unsharp mask: unsharp=5:5:0.8:5:5:0.0 (sharpens luma details naturally without ringing artifacts)
+    const filters = [
+      'hqdn3d=1.5:1.5:3.0:3.0',
+      `scale=${targetWidth}:${targetHeight}:flags=lanczos`,
+      'unsharp=5:5:0.8:5:5:0.0',
+    ];
+
+    console.log(
+      `[VideoProcessor] Enhancing clip to ${targetWidth}x${targetHeight} Full HD: ${path.basename(outputEnhancedPath)}`
+    );
+
+    ffmpeg(inputClipPath)
+      .videoFilters(filters)
+      .outputOptions([
+        '-c:v libx264',
+        '-preset fast',
+        '-crf 18',
+        '-b:v 5000k',
+        '-maxrate 7000k',
+        '-bufsize 10000k',
+        '-pix_fmt yuv420p',
+        '-c:a aac',
+        '-b:a 192k',
+        '-movflags +faststart',
+      ])
+      .output(outputEnhancedPath)
+      .on('end', async () => {
+        try {
+          if (!fs.existsSync(outputEnhancedPath)) {
+            return reject(new Error('Enhanced MP4 file was not created by FFmpeg.'));
+          }
+
+          const stats = fs.statSync(outputEnhancedPath);
+          if (stats.size === 0) {
+            return reject(new Error('Enhanced MP4 file was generated with 0 bytes.'));
+          }
+
+          // Probe to confirm actual enhanced dimensions
+          const meta = await getVideoMetadata(outputEnhancedPath);
+
+          resolve({
+            enhancedPath: outputEnhancedPath,
+            resolution: `${meta.width}x${meta.height}`,
+            fileSize: stats.size,
+            duration: meta.duration,
+          });
+        } catch (err) {
+          reject(err);
+        }
+      })
+      .on('error', (err) => {
+        console.error('[VideoProcessor] Enhancement error:', err.message);
+        reject(new Error(`Full HD enhancement failed: ${err.message}`));
+      })
+      .run();
+  });
+}
+
 module.exports = {
   getVideoMetadata,
   detectVideoMoments,
   extractThumbnail,
   renderClip,
+  enhanceClipTo1080p,
   outputsDir,
   uploadsDir,
 };

@@ -205,13 +205,16 @@ export default function ProjectsPage() {
                 >
                   <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                     <Film size={14} color="var(--green-accent)" />
-                    {p.clipsCount || 0} Clips
+                    {p.clipsCount || 0} Clips ({p.settings?.clipDuration || 30}s)
                   </span>
                   <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                     <Clock size={14} />
                     {Math.round(p.videoDuration || 0)}s
                   </span>
                   <span>{p.settings?.format || '9:16'}</span>
+                  {p.settings?.qualityEnhancement === '1080p' && (
+                    <span className="badge badge-green" style={{ fontSize: '10px' }}>1080p Full HD</span>
+                  )}
                 </div>
               </div>
 

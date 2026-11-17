@@ -46,6 +46,22 @@ const projectSchema = new mongoose.Schema({
       min: 1,
       max: 20
     },
+    clipDuration: {
+      type: Number,
+      default: 30,
+      min: 5,
+      max: 300
+    },
+    clipDurationMode: {
+      type: String,
+      enum: ['15', '30', '45', '60', 'custom'],
+      default: '30'
+    },
+    qualityEnhancement: {
+      type: String,
+      enum: ['original', '1080p'],
+      default: 'original'
+    },
     format: {
       type: String,
       enum: ['9:16', '16:9', '1:1'],

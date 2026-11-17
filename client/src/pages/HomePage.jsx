@@ -41,6 +41,9 @@ export default function HomePage() {
   const [clipsCount, setClipsCount] = useState(5);
   const [customClipsCount, setCustomClipsCount] = useState('');
   const [isCustomCount, setIsCustomCount] = useState(false);
+  const [clipDurationMode, setClipDurationMode] = useState('30');
+  const [customDuration, setCustomDuration] = useState('');
+  const [qualityEnhancement, setQualityEnhancement] = useState('original');
   const [format, setFormat] = useState('9:16');
   const [captions, setCaptions] = useState(true);
 
@@ -64,6 +67,9 @@ export default function HomePage() {
       if (pendingProject.clipsCount) setClipsCount(pendingProject.clipsCount);
       if (pendingProject.format) setFormat(pendingProject.format);
       if (pendingProject.captions !== undefined) setCaptions(pendingProject.captions);
+      if (pendingProject.clipDurationMode) setClipDurationMode(pendingProject.clipDurationMode);
+      if (pendingProject.customDuration) setCustomDuration(pendingProject.customDuration);
+      if (pendingProject.qualityEnhancement) setQualityEnhancement(pendingProject.qualityEnhancement);
 
       if (isAuthenticated) {
         setInfoMessage('Your previously entered settings have been restored. Please select your authorized video file to begin.');
@@ -92,11 +98,27 @@ export default function HomePage() {
       return;
     }
 
+    // Validate custom duration
+    let effectiveDuration = 30;
+    if (clipDurationMode === 'custom') {
+      const cd = parseInt(customDuration, 10);
+      if (isNaN(cd) || cd < 5 || cd > 300) {
+        setError('Please enter a valid custom clip duration between 5 and 300 seconds.');
+        return;
+      }
+      effectiveDuration = cd;
+    } else {
+      effectiveDuration = parseInt(clipDurationMode, 10) || 30;
+    }
+
     // Non-logged-in user handling
     if (!isAuthenticated) {
       savePendingProject({
         youtubeUrl: youtubeUrl.trim(),
         clipsCount: effectiveClipsCount,
+        clipDurationMode,
+        customDuration,
+        qualityEnhancement,
         format,
         captions,
       });
@@ -117,6 +139,9 @@ export default function HomePage() {
     try {
       const formData = new FormData();
       formData.append('clipsCount', effectiveClipsCount);
+      formData.append('clipDuration', effectiveDuration);
+      formData.append('clipDurationMode', clipDurationMode);
+      formData.append('qualityEnhancement', qualityEnhancement);
       formData.append('format', format);
       formData.append('captions', captions);
       formData.append('videoFile', uploadedFile);
@@ -355,102 +380,214 @@ export default function HomePage() {
                   background: 'var(--bg-secondary)',
                   border: '1px solid var(--border)',
                   borderRadius: 'var(--radius-md)',
-                  padding: '16px',
+                  padding: '20px',
                   marginBottom: '20px',
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-                  gap: '16px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '18px',
                 }}
               >
-                {/* Number of Clips */}
-                <div>
-                  <label className="input-label" style={{ display: 'block', marginBottom: '8px' }}>
-                    Number of Clips
-                  </label>
-                  <div style={{ display: 'flex', gap: '6px' }}>
-                    {[3, 5, 10].map((num) => (
+                {/* Row 1: Duration & Number of Clips */}
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+                    gap: '16px',
+                  }}
+                >
+                  {/* Clip Duration */}
+                  <div>
+                    <label className="input-label" style={{ display: 'block', marginBottom: '8px' }}>
+                      Clip Duration
+                    </label>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      {[
+                        { id: '15', label: '15s' },
+                        { id: '30', label: '30s' },
+                        { id: '45', label: '45s' },
+                        { id: '60', label: '60s' },
+                      ].map((d) => (
+                        <button
+                          key={d.id}
+                          type="button"
+                          onClick={() => setClipDurationMode(d.id)}
+                          className={`btn btn-sm ${clipDurationMode === d.id ? 'btn-primary' : 'btn-secondary'}`}
+                          style={{ flex: 1, padding: '6px 0' }}
+                        >
+                          {d.label}
+                        </button>
+                      ))}
                       <button
-                        key={num}
                         type="button"
-                        onClick={() => {
-                          setClipsCount(num);
-                          setIsCustomCount(false);
-                        }}
-                        className={`btn btn-sm ${!isCustomCount && clipsCount === num ? 'btn-primary' : 'btn-secondary'}`}
-                        style={{ flex: 1, padding: '6px 0' }}
+                        onClick={() => setClipDurationMode('custom')}
+                        className={`btn btn-sm ${clipDurationMode === 'custom' ? 'btn-primary' : 'btn-secondary'}`}
+                        style={{ padding: '6px 12px' }}
                       >
-                        {num}
+                        Custom
                       </button>
-                    ))}
-                    <button
-                      type="button"
-                      onClick={() => setIsCustomCount(!isCustomCount)}
-                      className={`btn btn-sm ${isCustomCount ? 'btn-primary' : 'btn-secondary'}`}
-                      style={{ padding: '6px 12px' }}
-                    >
-                      Custom
-                    </button>
+                    </div>
+                    {clipDurationMode === 'custom' && (
+                      <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <input
+                          type="number"
+                          min="5"
+                          max="300"
+                          placeholder="e.g. 20"
+                          value={customDuration}
+                          onChange={(e) => setCustomDuration(e.target.value)}
+                          className="input-field"
+                          style={{ padding: '6px 10px', width: '100%' }}
+                        />
+                        <span style={{ fontSize: '12px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                          seconds (5–300s)
+                        </span>
+                      </div>
+                    )}
                   </div>
-                  {isCustomCount && (
-                    <input
-                      type="number"
-                      min="1"
-                      max="20"
-                      placeholder="e.g. 4"
-                      value={customClipsCount}
-                      onChange={(e) => setCustomClipsCount(e.target.value)}
-                      className="input-field"
-                      style={{ marginTop: '8px', padding: '6px 10px', width: '100%' }}
-                    />
-                  )}
+
+                  {/* Number of Clips */}
+                  <div>
+                    <label className="input-label" style={{ display: 'block', marginBottom: '8px' }}>
+                      Number of Clips
+                    </label>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      {[3, 5, 10].map((num) => (
+                        <button
+                          key={num}
+                          type="button"
+                          onClick={() => {
+                            setClipsCount(num);
+                            setIsCustomCount(false);
+                          }}
+                          className={`btn btn-sm ${!isCustomCount && clipsCount === num ? 'btn-primary' : 'btn-secondary'}`}
+                          style={{ flex: 1, padding: '6px 0' }}
+                        >
+                          {num}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => setIsCustomCount(!isCustomCount)}
+                        className={`btn btn-sm ${isCustomCount ? 'btn-primary' : 'btn-secondary'}`}
+                        style={{ padding: '6px 12px' }}
+                      >
+                        Custom
+                      </button>
+                    </div>
+                    {isCustomCount && (
+                      <input
+                        type="number"
+                        min="1"
+                        max="20"
+                        placeholder="e.g. 4"
+                        value={customClipsCount}
+                        onChange={(e) => setCustomClipsCount(e.target.value)}
+                        className="input-field"
+                        style={{ marginTop: '8px', padding: '6px 10px', width: '100%' }}
+                      />
+                    )}
+                  </div>
                 </div>
 
-                {/* Video Format */}
-                <div>
-                  <label className="input-label" style={{ display: 'block', marginBottom: '8px' }}>
-                    Video Format
-                  </label>
-                  <div style={{ display: 'flex', gap: '6px' }}>
-                    {[
-                      { id: '9:16', label: '9:16 (Shorts)' },
-                      { id: '16:9', label: '16:9' },
-                      { id: '1:1', label: '1:1' },
-                    ].map((f) => (
+                {/* Row 2: Format & Captions */}
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+                    gap: '16px',
+                  }}
+                >
+                  {/* Video Format */}
+                  <div>
+                    <label className="input-label" style={{ display: 'block', marginBottom: '8px' }}>
+                      Video Format
+                    </label>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      {[
+                        { id: '9:16', label: '9:16 (Shorts)' },
+                        { id: '16:9', label: '16:9' },
+                        { id: '1:1', label: '1:1' },
+                      ].map((f) => (
+                        <button
+                          key={f.id}
+                          type="button"
+                          onClick={() => setFormat(f.id)}
+                          className={`btn btn-sm ${format === f.id ? 'btn-primary' : 'btn-secondary'}`}
+                          style={{ flex: 1, padding: '6px 0' }}
+                        >
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Captions */}
+                  <div>
+                    <label className="input-label" style={{ display: 'block', marginBottom: '8px' }}>
+                      Captions / Subtitles
+                    </label>
+                    <div style={{ display: 'flex', gap: '6px' }}>
                       <button
-                        key={f.id}
                         type="button"
-                        onClick={() => setFormat(f.id)}
-                        className={`btn btn-sm ${format === f.id ? 'btn-primary' : 'btn-secondary'}`}
+                        onClick={() => setCaptions(true)}
+                        className={`btn btn-sm ${captions ? 'btn-primary' : 'btn-secondary'}`}
                         style={{ flex: 1, padding: '6px 0' }}
                       >
-                        {f.label}
+                        ON
                       </button>
-                    ))}
+                      <button
+                        type="button"
+                        onClick={() => setCaptions(false)}
+                        className={`btn btn-sm ${!captions ? 'btn-primary' : 'btn-secondary'}`}
+                        style={{ flex: 1, padding: '6px 0' }}
+                      >
+                        OFF
+                      </button>
+                    </div>
                   </div>
                 </div>
 
-                {/* Captions */}
-                <div>
-                  <label className="input-label" style={{ display: 'block', marginBottom: '8px' }}>
-                    Captions / Subtitles
-                  </label>
-                  <div style={{ display: 'flex', gap: '6px' }}>
+                {/* Row 3: AI Quality Enhancement */}
+                <div style={{ borderTop: '1px solid var(--border)', paddingTop: '14px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                    <label className="input-label" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <Sparkles size={14} color="var(--green-accent)" />
+                      AI Quality Enhancement
+                    </label>
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                      Separate 1080p Full HD master preserved alongside original
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '8px', marginBottom: '6px' }}>
                     <button
                       type="button"
-                      onClick={() => setCaptions(true)}
-                      className={`btn btn-sm ${captions ? 'btn-primary' : 'btn-secondary'}`}
-                      style={{ flex: 1, padding: '6px 0' }}
+                      onClick={() => setQualityEnhancement('original')}
+                      className={`btn btn-sm ${qualityEnhancement === 'original' ? 'btn-primary' : 'btn-secondary'}`}
+                      style={{ justifyContent: 'center', padding: '8px 12px' }}
                     >
-                      ON
+                      Original Quality (720p)
                     </button>
                     <button
                       type="button"
-                      onClick={() => setCaptions(false)}
-                      className={`btn btn-sm ${!captions ? 'btn-primary' : 'btn-secondary'}`}
-                      style={{ flex: 1, padding: '6px 0' }}
+                      onClick={() => setQualityEnhancement('1080p')}
+                      className={`btn btn-sm ${qualityEnhancement === '1080p' ? 'btn-primary' : 'btn-secondary'}`}
+                      style={{ justifyContent: 'center', padding: '8px 12px' }}
                     >
-                      OFF
+                      <Sparkles size={13} />
+                      Enhance to Full HD (1080p)
                     </button>
+                  </div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                    {qualityEnhancement === '1080p' ? (
+                      <span>
+                        <strong style={{ color: 'var(--green-accent)' }}>Full HD 1080p Pipeline Active:</strong> Applies FFmpeg high-fidelity Lanczos upscaling (1080x1920 portrait / 1920x1080 landscape), 3D noise reduction (hqdn3d), and unsharp detail sharpening. Original clips are always preserved.
+                      </span>
+                    ) : (
+                      <span>
+                        Standard high-speed rendering at 720p resolution without upscaling overhead.
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>

@@ -226,7 +226,14 @@ export default function MyClipsPage() {
 
               {/* Card Body */}
               <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', flex: 1, gap: '8px' }}>
-                <div style={{ fontWeight: 700, fontSize: '15px' }}>{clip.title}</div>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '8px' }}>
+                  <div style={{ fontWeight: 700, fontSize: '15px' }}>{clip.title}</div>
+                  {clip.enhancementStatus === 'completed' && clip.enhancedVideoUrl && (
+                    <span className="badge badge-green" style={{ fontSize: '10px', flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                      <Sparkles size={10} /> 1080p
+                    </span>
+                  )}
+                </div>
 
                 {clip.projectId && (
                   <Link
@@ -236,6 +243,29 @@ export default function MyClipsPage() {
                     From: {clip.projectId.title}
                   </Link>
                 )}
+
+                {/* Duration & Resolution info */}
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    fontSize: '11px',
+                    color: 'var(--text-muted)',
+                    background: 'var(--bg-input)',
+                    padding: '6px 8px',
+                    borderRadius: 'var(--radius-sm)',
+                  }}
+                >
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: 'var(--green-accent)', fontWeight: 600 }}>
+                    Duration: {clip.duration ? Number(clip.duration).toFixed(1) : (clip.endTime - clip.startTime).toFixed(1)}s
+                  </span>
+                  <span>
+                    {clip.enhancementStatus === 'completed' && clip.enhancedResolution
+                      ? clip.enhancedResolution
+                      : clip.resolution || (clip.format === '9:16' ? '720x1280' : '1280x720')}
+                  </span>
+                </div>
 
                 <div
                   style={{
@@ -247,14 +277,36 @@ export default function MyClipsPage() {
                     gap: '8px',
                   }}
                 >
-                  <a
-                    href={`/api/clips/download/${clip._id}`}
-                    className="btn btn-primary btn-sm"
-                    style={{ flex: 1 }}
-                    download
-                  >
-                    <Download size={14} /> Download MP4
-                  </a>
+                  {clip.enhancementStatus === 'completed' && clip.enhancedVideoUrl ? (
+                    <>
+                      <a
+                        href={`/api/clips/download-enhanced/${clip._id}`}
+                        className="btn btn-primary btn-sm"
+                        style={{ flex: 1 }}
+                        download
+                        title={`Download 1080p (${clip.enhancedResolution || '1080x1920'})`}
+                      >
+                        <Sparkles size={14} /> Download 1080p
+                      </a>
+                      <a
+                        href={`/api/clips/download/${clip._id}`}
+                        className="btn btn-secondary btn-sm"
+                        download
+                        title="Download original 720p"
+                      >
+                        <Download size={14} /> 720p
+                      </a>
+                    </>
+                  ) : (
+                    <a
+                      href={`/api/clips/download/${clip._id}`}
+                      className="btn btn-primary btn-sm"
+                      style={{ flex: 1 }}
+                      download
+                    >
+                      <Download size={14} /> Download MP4
+                    </a>
+                  )}
 
                   <button
                     onClick={() => setEditingClip(clip)}
