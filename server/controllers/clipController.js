@@ -13,9 +13,12 @@ const getAllUserClips = async (req, res) => {
       .populate('projectId', 'title youtubeUrl status')
       .sort({ createdAt: -1 });
 
+    // Only return clips that actually exist on disk
+    const verifiedClips = clips.filter((c) => c.videoPath && fs.existsSync(c.videoPath));
+
     return res.status(200).json({
       success: true,
-      clips,
+      clips: verifiedClips,
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
@@ -36,10 +39,11 @@ const getClipsByProject = async (req, res) => {
     }
 
     const clips = await Clip.find({ projectId }).sort({ startTime: 1 });
+    const verifiedClips = clips.filter((c) => c.videoPath && fs.existsSync(c.videoPath));
 
     return res.status(200).json({
       success: true,
-      clips,
+      clips: verifiedClips,
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
@@ -89,8 +93,13 @@ const downloadAllClipsAsZip = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Access denied.' });
     }
 
-    const clips = await Clip.find({ projectId, status: 'completed' });
-    if (!clips || clips.length === 0) {
+    const clips = await Clip.find({
+      projectId,
+      status: { $in: ['Completed', 'completed'] },
+    });
+    const verifiedClips = clips.filter((c) => c.videoPath && fs.existsSync(c.videoPath));
+
+    if (!verifiedClips || verifiedClips.length === 0) {
       return res.status(400).json({ success: false, message: 'No completed clips available for download.' });
     }
 
@@ -108,13 +117,11 @@ const downloadAllClipsAsZip = async (req, res) => {
       res.status(500).end();
     });
 
-    for (let i = 0; i < clips.length; i++) {
-      const clip = clips[i];
-      if (clip.videoPath && fs.existsSync(clip.videoPath)) {
-        const safeTitle = (clip.title || `clip_${i + 1}`).replace(/[^a-zA-Z0-9_-]/g, '_');
-        const clipFileName = `${i + 1}_${safeTitle}.mp4`;
-        archive.file(clip.videoPath, { name: clipFileName });
-      }
+    for (let i = 0; i < verifiedClips.length; i++) {
+      const clip = verifiedClips[i];
+      const safeTitle = (clip.title || `clip_${i + 1}`).replace(/[^a-zA-Z0-9_-]/g, '_');
+      const clipFileName = `${i + 1}_${safeTitle}.mp4`;
+      archive.file(clip.videoPath, { name: clipFileName });
     }
 
     await archive.finalize();
@@ -187,7 +194,7 @@ const rerenderClip = async (req, res) => {
     clip.videoUrl = `/outputs/${newClipFileName}`;
     clip.thumbnailUrl = `/outputs/${newThumbFileName}`;
     clip.fileSize = renderRes.fileSize || 0;
-    clip.status = 'completed';
+    clip.status = 'Completed';
     await clip.save();
 
     return res.status(200).json({

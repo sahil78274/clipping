@@ -157,10 +157,13 @@ export default function ProjectsPage() {
             >
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-                  {p.status === 'completed' && <span className="badge badge-green">Completed</span>}
-                  {p.status === 'failed' && <span className="badge badge-red">Failed</span>}
-                  {(p.status === 'waiting' || p.status === 'analyzing' || p.status === 'generating') && (
+                  {(p.status === 'Completed' || p.status === 'completed') && <span className="badge badge-green">Completed</span>}
+                  {(p.status === 'Failed' || p.status === 'failed') && <span className="badge badge-red">Failed</span>}
+                  {(p.status === 'Processing' || p.status === 'analyzing' || p.status === 'generating') && (
                     <span className="badge badge-amber">Processing ({p.progress}%)</span>
+                  )}
+                  {(p.status === 'Queued' || p.status === 'waiting') && (
+                    <span className="badge badge-neutral">Queued</span>
                   )}
 
                   <span style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>

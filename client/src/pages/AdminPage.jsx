@@ -330,7 +330,7 @@ export default function AdminPage() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
                       <span style={{ color: 'var(--text-secondary)' }}>Gemini API Key:</span>
                       <span className={`badge ${systemStatus?.gemini?.isConfigured ? 'badge-green' : 'badge-amber'}`}>
-                        {systemStatus?.gemini?.isConfigured ? 'Configured' : 'Fallback Engine Active'}
+                        {systemStatus?.gemini?.isConfigured ? 'Configured' : 'Awaiting GEMINI_API_KEY'}
                       </span>
                     </div>
 

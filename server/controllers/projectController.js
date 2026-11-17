@@ -6,7 +6,6 @@ const Clip = require('../models/Clip');
 const { analyzeVideoMoments } = require('../services/gemini');
 const {
   getVideoMetadata,
-  getOrCreateSampleVideo,
   renderClip,
   outputsDir,
 } = require('../services/videoProcessor');
@@ -34,51 +33,46 @@ async function processProjectAsync(projectId) {
 
   try {
     // Step 1: Prepare authorized source video
-    project.status = 'analyzing';
-    project.currentStep = 'Verifying authorized video source';
-    project.progress = 10;
+    project.status = 'Processing';
+    project.currentStep = 'Validating source video file';
+    project.progress = 15;
     await project.save();
 
-    let sourcePath = project.sourcePath;
-    let duration = project.videoDuration || 60;
-
+    const sourcePath = project.sourcePath;
     if (!sourcePath || !fs.existsSync(sourcePath)) {
-      // Use authorized creator sample video
-      const sample = await getOrCreateSampleVideo();
-      sourcePath = sample.path;
-      duration = sample.duration;
-      project.sourcePath = sourcePath;
-      project.videoDuration = duration;
-      project.sourceType = 'sample';
-      await project.save();
-    } else {
-      const meta = await getVideoMetadata(sourcePath);
-      duration = meta.duration || 60;
-      project.videoDuration = duration;
-      await project.save();
+      throw new Error('Authorized source video file does not exist on the server.');
     }
+
+    const meta = await getVideoMetadata(sourcePath);
+    const duration = meta.duration;
+    if (!duration || duration < 3) {
+      throw new Error('Source video duration is too short for clipping (minimum 3 seconds required).');
+    }
+
+    project.videoDuration = duration;
+    await project.save();
 
     // Step 2: Send to Gemini for intelligent moment detection
     project.currentStep = 'Analyzing video with Gemini AI for best moments';
-    project.progress = 25;
+    project.progress = 30;
     await project.save();
 
     const clipsCount = project.settings.clipsCount || 5;
     const detectedMoments = await analyzeVideoMoments({
       title: project.title,
-      description: project.youtubeUrl ? `YouTube Video URL: ${project.youtubeUrl}` : 'Creator video upload',
+      description: project.youtubeUrl ? `YouTube Video: ${project.youtubeUrl}` : `Uploaded video: ${project.title}`,
       duration,
       clipsCount,
+      videoPath: sourcePath,
     });
 
     if (!detectedMoments || detectedMoments.length === 0) {
-      throw new Error('No valid clip moments could be identified from this video.');
+      throw new Error('No valid clip timestamps could be identified from this video.');
     }
 
     // Step 3: Render clips using FFmpeg
-    project.status = 'generating';
     project.currentStep = `Rendering ${detectedMoments.length} clips with FFmpeg`;
-    project.progress = 40;
+    project.progress = 45;
     await project.save();
 
     const createdClips = [];
@@ -89,7 +83,7 @@ async function processProjectAsync(projectId) {
       const clipIndex = i + 1;
 
       project.currentStep = `Rendering clip ${clipIndex} of ${totalClips}: "${moment.title}"`;
-      project.progress = Math.min(95, Math.floor(40 + (i / totalClips) * 55));
+      project.progress = Math.min(95, Math.floor(45 + (i / totalClips) * 50));
       await project.save();
 
       const clipFileName = `clip_${project._id}_${clipIndex}_${Date.now()}.mp4`;
@@ -109,11 +103,16 @@ async function processProjectAsync(projectId) {
         title: moment.title,
       });
 
+      // Verify that rendered file actually exists on disk and is non-empty
+      if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
+        throw new Error(`Failed to render MP4 file for clip ${clipIndex}.`);
+      }
+
       const clip = await Clip.create({
         userId: project.userId,
         projectId: project._id,
         title: moment.title,
-        description: moment.description,
+        description: moment.description || '',
         startTime: moment.startTime,
         endTime: moment.endTime,
         duration: renderRes.duration,
@@ -122,28 +121,32 @@ async function processProjectAsync(projectId) {
         captions: project.settings.captions !== false,
         videoPath: outputPath,
         videoUrl: `/outputs/${clipFileName}`,
-        thumbnailUrl: `/outputs/${thumbFileName}`,
+        thumbnailUrl: fs.existsSync(thumbnailPath) ? `/outputs/${thumbFileName}` : '',
         fileSize: renderRes.fileSize || 0,
-        status: 'completed',
+        status: 'Completed',
       });
 
       createdClips.push(clip);
     }
 
+    if (createdClips.length === 0) {
+      throw new Error('No clips could be successfully rendered.');
+    }
+
     // Step 4: Finalize project & permanently deduct credits
-    project.status = 'completed';
+    project.status = 'Completed';
     project.progress = 100;
     project.currentStep = 'All clips generated successfully';
     project.creditsDeducted = creditsToDeduct;
     await project.save();
 
     await finalizeCredits(userId, creditsToDeduct, project._id, createdClips.length);
-    console.log(`[Project ${projectId}] Completed successfully with ${createdClips.length} clips.`);
+    console.log(`[Project ${projectId}] Completed successfully with ${createdClips.length} genuine clips.`);
   } catch (err) {
-    console.error(`[Project ${projectId}] Processing failed:`, err);
+    console.error(`[Project ${projectId}] Processing failed:`, err.message);
 
-    project.status = 'failed';
-    project.currentStep = 'Generation failed';
+    project.status = 'Failed';
+    project.currentStep = 'Processing failed';
     project.errorMessage = err.message || 'An error occurred during video clipping.';
     await project.save();
 
@@ -157,8 +160,54 @@ async function processProjectAsync(projectId) {
 // POST /api/projects - Create and start new clipping project
 const createProject = async (req, res) => {
   try {
-    const { youtubeUrl, title, clipsCount = 5, format = '9:16', captions = true, useSample = false } = req.body;
+    const { youtubeUrl, title, clipsCount = 5, format = '9:16', captions = true } = req.body;
     const uploadedFile = req.file;
+
+    // Check if user entered a YouTube URL without an authorized video file
+    if (youtubeUrl && !uploadedFile) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'Automated downloading of public YouTube URLs is not supported due to platform restrictions and copyright rules. Please upload your authorized creator video file (.mp4, .mov, .webm) to process clips.',
+        requiresUpload: true,
+      });
+    }
+
+    // Must have an uploaded file
+    if (!uploadedFile) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please upload an authorized video file (.mp4, .mov, .webm, .mkv).',
+      });
+    }
+
+    const sourcePath = uploadedFile.path;
+    if (!fs.existsSync(sourcePath)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Uploaded file could not be stored on the server.',
+      });
+    }
+
+    // Probe uploaded video file to verify it is valid
+    let videoDuration = 0;
+    try {
+      const meta = await getVideoMetadata(sourcePath);
+      videoDuration = meta.duration;
+      if (!videoDuration || videoDuration < 3) {
+        try { fs.unlinkSync(sourcePath); } catch (e) {}
+        return res.status(400).json({
+          success: false,
+          message: 'Uploaded video is too short. Minimum duration of 3 seconds is required.',
+        });
+      }
+    } catch (probeErr) {
+      try { fs.unlinkSync(sourcePath); } catch (e) {}
+      return res.status(400).json({
+        success: false,
+        message: `Invalid video file: ${probeErr.message}`,
+      });
+    }
 
     const parsedClipsCount = Math.min(20, Math.max(1, parseInt(clipsCount, 10) || 5));
     const validFormats = ['9:16', '16:9', '1:1'];
@@ -168,6 +217,7 @@ const createProject = async (req, res) => {
     // Credit calculation & check
     const requiredCredits = calculateCost(parsedClipsCount);
     if (req.user.credits < requiredCredits) {
+      try { fs.unlinkSync(sourcePath); } catch (e) {}
       return res.status(400).json({
         success: false,
         message: `Insufficient credits. This project requires ${requiredCredits} credits, but you have ${req.user.credits} credits.`,
@@ -176,78 +226,35 @@ const createProject = async (req, res) => {
       });
     }
 
-    let sourceType = 'youtube';
-    let sourcePath = '';
     let projectTitle = (title || '').trim();
-    let videoDuration = 60;
-
-    // Determine source
-    if (uploadedFile) {
-      sourceType = 'upload';
-      sourcePath = uploadedFile.path;
-      if (!projectTitle) {
-        projectTitle = path.parse(uploadedFile.originalname).name;
-      }
-      try {
-        const meta = await getVideoMetadata(sourcePath);
-        videoDuration = meta.duration;
-      } catch (metaErr) {
-        console.warn('Metadata probe warning for upload:', metaErr.message);
-      }
-    } else if (useSample || (!youtubeUrl && !uploadedFile)) {
-      sourceType = 'sample';
-      const sample = await getOrCreateSampleVideo();
-      sourcePath = sample.path;
-      videoDuration = sample.duration;
-      if (!projectTitle) {
-        projectTitle = 'Creator Masterclass: The Viral Content Blueprint';
-      }
-    } else if (youtubeUrl) {
-      const ytId = extractYouTubeId(youtubeUrl);
-      if (!ytId) {
-        return res.status(400).json({
-          success: false,
-          message: 'Please provide a valid YouTube URL (e.g. https://www.youtube.com/watch?v=... or https://youtu.be/...)',
-        });
-      }
-
-      sourceType = 'youtube';
-      if (!projectTitle) {
-        projectTitle = `YouTube Video (${ytId})`;
-      }
-
-      // Per Section 5 rule:
-      // Public YouTube URLs do not automatically grant download permissions.
-      // Use authorized sample creator source for rendering while preserving YouTube URL and metadata.
-      const sample = await getOrCreateSampleVideo();
-      sourcePath = sample.path;
-      videoDuration = sample.duration;
+    if (!projectTitle) {
+      projectTitle = path.parse(uploadedFile.originalname).name;
     }
 
     // Reserve credits
     await reserveCredits(req.user._id, requiredCredits, null, `Clip generation for "${projectTitle}"`);
 
-    // Create Project
+    // Create Project in database with Queued status
     const project = await Project.create({
       userId: req.user._id,
       youtubeUrl: youtubeUrl || '',
       title: projectTitle || 'Untitled Video Project',
-      status: 'waiting',
+      status: 'Queued',
       progress: 0,
-      currentStep: 'Initializing clipping engine',
+      currentStep: 'Queued in processing pipeline',
       videoDuration,
       settings: {
         clipsCount: parsedClipsCount,
         format: chosenFormat,
         captions: isCaptions,
       },
-      sourceType,
+      sourceType: 'upload',
       sourcePath,
       creditsReserved: requiredCredits,
       creditsDeducted: 0,
     });
 
-    // Fire off async background processing
+    // Start background processing
     setImmediate(() => {
       processProjectAsync(project._id).catch((err) => {
         console.error('Unhandled background worker error:', err);
@@ -256,7 +263,7 @@ const createProject = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      message: 'Project created and queued for AI clipping.',
+      message: 'Project created and queued for processing.',
       project,
       creditsReserved: requiredCredits,
       remainingCredits: req.user.credits - requiredCredits,
@@ -277,13 +284,15 @@ const getProjects = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    // Attach clip counts to each project
     const projectIds = projects.map((p) => p._id);
-    const clips = await Clip.find({ projectId: { $in: projectIds } }, 'projectId status').lean();
+    const clips = await Clip.find({ projectId: { $in: projectIds } }, 'projectId status videoPath').lean();
 
     const clipCounts = {};
     for (const c of clips) {
-      clipCounts[c.projectId] = (clipCounts[c.projectId] || 0) + 1;
+      // Only count clips that exist on disk
+      if (fs.existsSync(c.videoPath)) {
+        clipCounts[c.projectId] = (clipCounts[c.projectId] || 0) + 1;
+      }
     }
 
     const enriched = projects.map((p) => ({
@@ -300,7 +309,7 @@ const getProjects = async (req, res) => {
   }
 };
 
-// GET /api/projects/:id - Get project with clips
+// GET /api/projects/:id - Get project with real clips
 const getProjectById = async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
@@ -308,17 +317,18 @@ const getProjectById = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Project not found.' });
     }
 
-    // Ownership check (or admin)
     if (project.userId.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
       return res.status(403).json({ success: false, message: 'Access denied.' });
     }
 
+    // Only return clips that actually exist on disk
     const clips = await Clip.find({ projectId: project._id }).sort({ startTime: 1 });
+    const verifiedClips = clips.filter((c) => fs.existsSync(c.videoPath));
 
     return res.status(200).json({
       success: true,
       project,
-      clips,
+      clips: verifiedClips,
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
@@ -337,7 +347,6 @@ const deleteProject = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Access denied.' });
     }
 
-    // Delete associated clips and files
     const clips = await Clip.find({ projectId: project._id });
     for (const clip of clips) {
       if (clip.videoPath && fs.existsSync(clip.videoPath)) {
@@ -346,8 +355,7 @@ const deleteProject = async (req, res) => {
     }
     await Clip.deleteMany({ projectId: project._id });
 
-    // Delete source upload if creator-uploaded
-    if (project.sourceType === 'upload' && project.sourcePath && fs.existsSync(project.sourcePath)) {
+    if (project.sourcePath && fs.existsSync(project.sourcePath)) {
       try { fs.unlinkSync(project.sourcePath); } catch (e) {}
     }
 
@@ -374,6 +382,13 @@ const retryProject = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Access denied.' });
     }
 
+    if (!project.sourcePath || !fs.existsSync(project.sourcePath)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Source video file is no longer available on the server. Please create a new project with your video file.',
+      });
+    }
+
     const requiredCredits = calculateCost(project.settings.clipsCount || 5);
     if (req.user.credits < requiredCredits) {
       return res.status(400).json({
@@ -382,17 +397,15 @@ const retryProject = async (req, res) => {
       });
     }
 
-    // Reserve credits again
     await reserveCredits(req.user._id, requiredCredits, project._id, `Retry project "${project.title}"`);
 
-    project.status = 'waiting';
+    project.status = 'Queued';
     project.progress = 0;
-    project.currentStep = 'Retrying project';
+    project.currentStep = 'Queued for retry';
     project.errorMessage = '';
     project.creditsReserved = requiredCredits;
     await project.save();
 
-    // Start background worker
     setImmediate(() => {
       processProjectAsync(project._id).catch((err) => console.error('Retry worker error:', err));
     });
