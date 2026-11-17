@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import api from '../services/api';
 import LoadingSpinner from '../components/LoadingSpinner';
 import EditClipModal from '../components/EditClipModal';
+import { downloadFile, getAuthenticatedDownloadUrl } from '../utils/downloadHelper';
 import {
   Film,
   Download,
@@ -21,6 +22,22 @@ export default function MyClipsPage() {
   const [formatFilter, setFormatFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [editingClip, setEditingClip] = useState(null);
+  const [downloadingKey, setDownloadingKey] = useState('');
+  const [downloadError, setDownloadError] = useState('');
+
+  const handleDownloadClick = async (e, endpoint, fallbackFilename, key) => {
+    e.preventDefault();
+    setDownloadError('');
+    setDownloadingKey(key);
+    try {
+      await downloadFile(endpoint, fallbackFilename);
+    } catch (err) {
+      setDownloadError(err.message || 'Failed to download file.');
+      alert(err.message || 'Failed to download file.');
+    } finally {
+      setDownloadingKey('');
+    }
+  };
 
   const fetchClips = async () => {
     try {
@@ -280,31 +297,62 @@ export default function MyClipsPage() {
                   {clip.enhancementStatus === 'completed' && clip.enhancedVideoUrl ? (
                     <>
                       <a
-                        href={`/api/clips/download-enhanced/${clip._id}`}
+                        href={getAuthenticatedDownloadUrl(
+                          `/api/clips/download-enhanced/${clip._id}`
+                        )}
+                        onClick={(e) =>
+                          handleDownloadClick(
+                            e,
+                            `/clips/download-enhanced/${clip._id}`,
+                            `${(clip.title || 'clip').replace(/[^a-zA-Z0-9_-]/g, '_')}_1080p.mp4`,
+                            `${clip._id}_1080p`
+                          )
+                        }
                         className="btn btn-primary btn-sm"
                         style={{ flex: 1 }}
                         download
                         title={`Download 1080p (${clip.enhancedResolution || '1080x1920'})`}
                       >
-                        <Sparkles size={14} /> Download 1080p
+                        <Sparkles size={14} />{' '}
+                        {downloadingKey === `${clip._id}_1080p`
+                          ? 'Downloading...'
+                          : 'Download 1080p'}
                       </a>
                       <a
-                        href={`/api/clips/download/${clip._id}`}
+                        href={getAuthenticatedDownloadUrl(`/api/clips/download/${clip._id}`)}
+                        onClick={(e) =>
+                          handleDownloadClick(
+                            e,
+                            `/clips/download/${clip._id}`,
+                            `${(clip.title || 'clip').replace(/[^a-zA-Z0-9_-]/g, '_')}_720p.mp4`,
+                            `${clip._id}_720p`
+                          )
+                        }
                         className="btn btn-secondary btn-sm"
                         download
                         title="Download original 720p"
                       >
-                        <Download size={14} /> 720p
+                        <Download size={14} />{' '}
+                        {downloadingKey === `${clip._id}_720p` ? '...' : '720p'}
                       </a>
                     </>
                   ) : (
                     <a
-                      href={`/api/clips/download/${clip._id}`}
+                      href={getAuthenticatedDownloadUrl(`/api/clips/download/${clip._id}`)}
+                      onClick={(e) =>
+                        handleDownloadClick(
+                          e,
+                          `/clips/download/${clip._id}`,
+                          `${(clip.title || 'clip').replace(/[^a-zA-Z0-9_-]/g, '_')}.mp4`,
+                          clip._id
+                        )
+                      }
                       className="btn btn-primary btn-sm"
                       style={{ flex: 1 }}
                       download
                     >
-                      <Download size={14} /> Download MP4
+                      <Download size={14} />{' '}
+                      {downloadingKey === clip._id ? 'Downloading...' : 'Download MP4'}
                     </a>
                   )}
 

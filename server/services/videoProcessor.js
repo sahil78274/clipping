@@ -473,12 +473,65 @@ function enhanceClipTo1080p({ inputClipPath, outputEnhancedPath, format = '9:16'
   });
 }
 
+/**
+ * Resolves a video file path cross-platform (handling Windows backslashes, relative paths, and outputsDir).
+ * Verifies the file actually exists and is non-empty.
+ */
+function resolveVideoFilePath(storedPath, videoUrl) {
+  if (!storedPath && !videoUrl) return null;
+
+  // 1. Direct path check
+  if (storedPath && typeof storedPath === 'string') {
+    if (fs.existsSync(storedPath)) {
+      try {
+        const stat = fs.statSync(storedPath);
+        if (stat.isFile() && stat.size > 0) return path.resolve(storedPath);
+      } catch (e) {}
+    }
+
+    // 2. Normalize Windows backslashes: e.g. "C:\path\server\outputs\clip.mp4" or "outputs\clip.mp4"
+    const normalized = storedPath.replace(/\\/g, '/');
+    if (fs.existsSync(normalized)) {
+      try {
+        const stat = fs.statSync(normalized);
+        if (stat.isFile() && stat.size > 0) return path.resolve(normalized);
+      } catch (e) {}
+    }
+
+    // 3. Extract basename (handling Windows or Unix path) and check inside outputsDir
+    const baseName = path.basename(normalized);
+    const inOutputs = path.join(outputsDir, baseName);
+    if (fs.existsSync(inOutputs)) {
+      try {
+        const stat = fs.statSync(inOutputs);
+        if (stat.isFile() && stat.size > 0) return inOutputs;
+      } catch (e) {}
+    }
+  }
+
+  // 4. Try from videoUrl: e.g. "/outputs/clip_123.mp4"
+  if (videoUrl && typeof videoUrl === 'string') {
+    const cleanUrl = videoUrl.split('?')[0];
+    const urlBase = path.basename(cleanUrl.replace(/\\/g, '/'));
+    const inOutputsFromUrl = path.join(outputsDir, urlBase);
+    if (fs.existsSync(inOutputsFromUrl)) {
+      try {
+        const stat = fs.statSync(inOutputsFromUrl);
+        if (stat.isFile() && stat.size > 0) return inOutputsFromUrl;
+      } catch (e) {}
+    }
+  }
+
+  return null;
+}
+
 module.exports = {
   getVideoMetadata,
   detectVideoMoments,
   extractThumbnail,
   renderClip,
   enhanceClipTo1080p,
+  resolveVideoFilePath,
   outputsDir,
   uploadsDir,
 };

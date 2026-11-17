@@ -52,6 +52,14 @@ app.use(
   })
 );
 
+// Fallback for missing static outputs
+app.use('/outputs/*', (req, res) => {
+  res.status(404).json({
+    success: false,
+    message: 'Requested output media file was not found on server storage.',
+  });
+});
+
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/projects', projectRoutes);
