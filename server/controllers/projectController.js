@@ -7,6 +7,7 @@ const { analyzeVideoMoments } = require('../services/gemini');
 const {
   getVideoMetadata,
   renderClip,
+  enhanceClipTo1080p,
   outputsDir,
 } = require('../services/videoProcessor');
 const {
@@ -58,12 +59,15 @@ async function processProjectAsync(projectId) {
     await project.save();
 
     const clipsCount = project.settings.clipsCount || 5;
+    const targetDuration = project.settings.clipDuration || 30;
+
     const detectedMoments = await analyzeVideoMoments({
       title: project.title,
       description: project.youtubeUrl ? `YouTube Video: ${project.youtubeUrl}` : `Uploaded video: ${project.title}`,
       duration,
       clipsCount,
       videoPath: sourcePath,
+      targetDuration,
     });
 
     if (!detectedMoments || detectedMoments.length === 0) {
@@ -77,13 +81,14 @@ async function processProjectAsync(projectId) {
 
     const createdClips = [];
     const totalClips = detectedMoments.length;
+    const isQualityEnhancement = project.settings.qualityEnhancement === '1080p';
 
     for (let i = 0; i < totalClips; i++) {
       const moment = detectedMoments[i];
       const clipIndex = i + 1;
 
       project.currentStep = `Rendering clip ${clipIndex} of ${totalClips}: "${moment.title}"`;
-      project.progress = Math.min(95, Math.floor(45 + (i / totalClips) * 50));
+      project.progress = Math.min(85, Math.floor(45 + (i / totalClips) * (isQualityEnhancement ? 25 : 45)));
       await project.save();
 
       const clipFileName = `clip_${project._id}_${clipIndex}_${Date.now()}.mp4`;
@@ -108,7 +113,7 @@ async function processProjectAsync(projectId) {
         throw new Error(`Failed to render MP4 file for clip ${clipIndex}.`);
       }
 
-      const clip = await Clip.create({
+      const clipData = {
         userId: project.userId,
         projectId: project._id,
         title: moment.title,
@@ -119,13 +124,46 @@ async function processProjectAsync(projectId) {
         score: moment.score || 85,
         format: project.settings.format || '9:16',
         captions: project.settings.captions !== false,
+        resolution: renderRes.resolution || (project.settings.format === '9:16' ? '720x1280' : project.settings.format === '1:1' ? '720x720' : '1280x720'),
+        qualityEnhancement: isQualityEnhancement ? '1080p' : 'original',
         videoPath: outputPath,
         videoUrl: `/outputs/${clipFileName}`,
         thumbnailUrl: fs.existsSync(thumbnailPath) ? `/outputs/${thumbFileName}` : '',
         fileSize: renderRes.fileSize || 0,
         status: 'Completed',
-      });
+        enhancementStatus: isQualityEnhancement ? 'processing' : 'none',
+      };
 
+      // Step 3b: If 1080p AI Video Quality Enhancement is enabled, run enhancement pipeline
+      if (isQualityEnhancement) {
+        try {
+          project.currentStep = `Enhancing clip ${clipIndex} of ${totalClips} to Full HD (1080p)`;
+          project.progress = Math.min(95, Math.floor(70 + (i / totalClips) * 25));
+          await project.save();
+
+          const enhancedFileName = `clip_${project._id}_${clipIndex}_1080p_${Date.now()}.mp4`;
+          const enhancedOutputPath = path.join(outputsDir, enhancedFileName);
+
+          const enhanceRes = await enhanceClipTo1080p({
+            inputClipPath: outputPath,
+            outputEnhancedPath: enhancedOutputPath,
+            format: project.settings.format || '9:16',
+          });
+
+          clipData.enhancedVideoPath = enhancedOutputPath;
+          clipData.enhancedVideoUrl = `/outputs/${enhancedFileName}`;
+          clipData.enhancedResolution = enhanceRes.resolution;
+          clipData.enhancedFileSize = enhanceRes.fileSize;
+          clipData.enhancementStatus = 'completed';
+        } catch (enhanceErr) {
+          console.error(`Clip ${clipIndex} 1080p enhancement error:`, enhanceErr.message);
+          clipData.enhancementStatus = 'failed';
+          clipData.enhancementError = enhanceErr.message || '1080p enhancement failed';
+          // Original clip is preserved intact!
+        }
+      }
+
+      const clip = await Clip.create(clipData);
       createdClips.push(clip);
     }
 
@@ -136,7 +174,9 @@ async function processProjectAsync(projectId) {
     // Step 4: Finalize project & permanently deduct credits
     project.status = 'Completed';
     project.progress = 100;
-    project.currentStep = 'All clips generated successfully';
+    project.currentStep = isQualityEnhancement
+      ? 'All clips generated and enhanced to 1080p successfully'
+      : 'All clips generated successfully';
     project.creditsDeducted = creditsToDeduct;
     await project.save();
 
@@ -160,7 +200,16 @@ async function processProjectAsync(projectId) {
 // POST /api/projects - Create and start new clipping project
 const createProject = async (req, res) => {
   try {
-    const { youtubeUrl, title, clipsCount = 5, format = '9:16', captions = true } = req.body;
+    const {
+      youtubeUrl,
+      title,
+      clipsCount = 5,
+      clipDuration = 30,
+      clipDurationMode = '30',
+      qualityEnhancement = 'original',
+      format = '9:16',
+      captions = true,
+    } = req.body;
     const uploadedFile = req.file;
 
     // Check if user entered a YouTube URL without an authorized video file
@@ -209,6 +258,37 @@ const createProject = async (req, res) => {
       });
     }
 
+    // Validate and process clip duration setting
+    const validDurationModes = ['15', '30', '45', '60', 'custom'];
+    const chosenDurationMode = validDurationModes.includes(clipDurationMode) ? clipDurationMode : '30';
+    let targetClipDuration = 30;
+
+    if (chosenDurationMode === 'custom') {
+      const parsedCustom = parseInt(clipDuration, 10);
+      if (isNaN(parsedCustom) || parsedCustom < 5 || parsedCustom > 300) {
+        try { fs.unlinkSync(sourcePath); } catch (e) {}
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid custom clip duration. Please enter a value between 5 and 300 seconds.',
+        });
+      }
+      targetClipDuration = parsedCustom;
+    } else {
+      targetClipDuration = parseInt(chosenDurationMode, 10) || 30;
+    }
+
+    // Gracefully handle source video too short for requested duration
+    if (videoDuration < targetClipDuration) {
+      try { fs.unlinkSync(sourcePath); } catch (e) {}
+      return res.status(400).json({
+        success: false,
+        message: `Source video duration (${Math.round(videoDuration)}s) is shorter than the requested clip duration (${targetClipDuration}s). Please select a shorter clip duration or upload a longer video.`,
+      });
+    }
+
+    const validEnhancements = ['original', '1080p'];
+    const chosenEnhancement = validEnhancements.includes(qualityEnhancement) ? qualityEnhancement : 'original';
+
     const parsedClipsCount = Math.min(20, Math.max(1, parseInt(clipsCount, 10) || 5));
     const validFormats = ['9:16', '16:9', '1:1'];
     const chosenFormat = validFormats.includes(format) ? format : '9:16';
@@ -245,6 +325,9 @@ const createProject = async (req, res) => {
       videoDuration,
       settings: {
         clipsCount: parsedClipsCount,
+        clipDuration: targetClipDuration,
+        clipDurationMode: chosenDurationMode,
+        qualityEnhancement: chosenEnhancement,
         format: chosenFormat,
         captions: isCaptions,
       },
@@ -289,7 +372,6 @@ const getProjects = async (req, res) => {
 
     const clipCounts = {};
     for (const c of clips) {
-      // Only count clips that exist on disk
       if (fs.existsSync(c.videoPath)) {
         clipCounts[c.projectId] = (clipCounts[c.projectId] || 0) + 1;
       }
@@ -309,7 +391,7 @@ const getProjects = async (req, res) => {
   }
 };
 
-// GET /api/projects/:id - Get project with real clips
+// GET /api/projects/:id - Get project details with clips
 const getProjectById = async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
@@ -321,49 +403,13 @@ const getProjectById = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Access denied.' });
     }
 
-    // Only return clips that actually exist on disk
     const clips = await Clip.find({ projectId: project._id }).sort({ startTime: 1 });
-    const verifiedClips = clips.filter((c) => fs.existsSync(c.videoPath));
+    const verifiedClips = clips.filter((c) => c.videoPath && fs.existsSync(c.videoPath));
 
     return res.status(200).json({
       success: true,
       project,
       clips: verifiedClips,
-    });
-  } catch (err) {
-    return res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-// DELETE /api/projects/:id - Delete project & its clips
-const deleteProject = async (req, res) => {
-  try {
-    const project = await Project.findById(req.params.id);
-    if (!project) {
-      return res.status(404).json({ success: false, message: 'Project not found.' });
-    }
-
-    if (project.userId.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
-      return res.status(403).json({ success: false, message: 'Access denied.' });
-    }
-
-    const clips = await Clip.find({ projectId: project._id });
-    for (const clip of clips) {
-      if (clip.videoPath && fs.existsSync(clip.videoPath)) {
-        try { fs.unlinkSync(clip.videoPath); } catch (e) {}
-      }
-    }
-    await Clip.deleteMany({ projectId: project._id });
-
-    if (project.sourcePath && fs.existsSync(project.sourcePath)) {
-      try { fs.unlinkSync(project.sourcePath); } catch (e) {}
-    }
-
-    await Project.findByIdAndDelete(project._id);
-
-    return res.status(200).json({
-      success: true,
-      message: 'Project and all clips deleted successfully.',
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
@@ -382,32 +428,31 @@ const retryProject = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Access denied.' });
     }
 
-    if (!project.sourcePath || !fs.existsSync(project.sourcePath)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Source video file is no longer available on the server. Please create a new project with your video file.',
-      });
+    if (project.status !== 'Failed' && project.status !== 'failed') {
+      return res.status(400).json({ success: false, message: 'Only failed projects can be retried.' });
     }
 
-    const requiredCredits = calculateCost(project.settings.clipsCount || 5);
+    const requiredCredits = calculateCost(project.settings?.clipsCount || 5);
     if (req.user.credits < requiredCredits) {
       return res.status(400).json({
         success: false,
-        message: `Insufficient credits to retry. Required: ${requiredCredits}, Available: ${req.user.credits}`,
+        message: `Insufficient credits. Need ${requiredCredits} credits to retry.`,
       });
     }
 
-    await reserveCredits(req.user._id, requiredCredits, project._id, `Retry project "${project.title}"`);
+    await reserveCredits(req.user._id, requiredCredits, project._id, `Retry project: ${project.title}`);
 
     project.status = 'Queued';
     project.progress = 0;
-    project.currentStep = 'Queued for retry';
+    project.currentStep = 'Retrying project';
     project.errorMessage = '';
     project.creditsReserved = requiredCredits;
     await project.save();
 
     setImmediate(() => {
-      processProjectAsync(project._id).catch((err) => console.error('Retry worker error:', err));
+      processProjectAsync(project._id).catch((err) => {
+        console.error('Retry worker error:', err);
+      });
     });
 
     return res.status(200).json({
@@ -420,11 +465,50 @@ const retryProject = async (req, res) => {
   }
 };
 
+// DELETE /api/projects/:id - Delete project and its clips
+const deleteProject = async (req, res) => {
+  try {
+    const project = await Project.findById(req.params.id);
+    if (!project) {
+      return res.status(404).json({ success: false, message: 'Project not found.' });
+    }
+
+    if (project.userId.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Access denied.' });
+    }
+
+    const clips = await Clip.find({ projectId: project._id });
+    for (const clip of clips) {
+      if (clip.videoPath && fs.existsSync(clip.videoPath)) {
+        try { fs.unlinkSync(clip.videoPath); } catch (e) {}
+      }
+      if (clip.enhancedVideoPath && fs.existsSync(clip.enhancedVideoPath)) {
+        try { fs.unlinkSync(clip.enhancedVideoPath); } catch (e) {}
+      }
+    }
+
+    await Clip.deleteMany({ projectId: project._id });
+
+    if (project.sourcePath && fs.existsSync(project.sourcePath)) {
+      try { fs.unlinkSync(project.sourcePath); } catch (e) {}
+    }
+
+    await Project.findByIdAndDelete(project._id);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Project and associated files deleted.',
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 module.exports = {
   createProject,
   getProjects,
   getProjectById,
-  deleteProject,
   retryProject,
+  deleteProject,
   processProjectAsync,
 };

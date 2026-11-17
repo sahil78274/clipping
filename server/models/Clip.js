@@ -56,6 +56,40 @@ const clipSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
+  resolution: {
+    type: String,
+    default: '720x1280'
+  },
+  qualityEnhancement: {
+    type: String,
+    enum: ['original', '1080p'],
+    default: 'original'
+  },
+  enhancedVideoPath: {
+    type: String,
+    default: ''
+  },
+  enhancedVideoUrl: {
+    type: String,
+    default: ''
+  },
+  enhancedResolution: {
+    type: String,
+    default: ''
+  },
+  enhancedFileSize: {
+    type: Number,
+    default: 0
+  },
+  enhancementStatus: {
+    type: String,
+    enum: ['none', 'processing', 'completed', 'failed'],
+    default: 'none'
+  },
+  enhancementError: {
+    type: String,
+    default: ''
+  },
   videoPath: {
     type: String,
     required: true

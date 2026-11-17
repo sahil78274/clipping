@@ -3,27 +3,40 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { detectVideoMoments } = require('./videoProcessor');
 
 /**
- * Validate and sanitize clip timestamps against real video duration
+ * Validate and sanitize clip timestamps against real video duration and requested targetDuration
  */
-function sanitizeClips(rawClips, videoDuration, requestedCount, projectTitle = 'Clip') {
+function sanitizeClips(rawClips, videoDuration, requestedCount, projectTitle = 'Clip', targetDuration = 30) {
   if (!Array.isArray(rawClips) || rawClips.length === 0) {
     return [];
   }
 
-  const duration = Math.max(5, Math.floor(videoDuration));
+  const duration = Math.max(3, Math.floor(videoDuration));
+  const desiredLen = Math.min(duration, Math.max(3, Math.floor(targetDuration)));
   const validClips = [];
 
   for (let i = 0; i < rawClips.length; i++) {
     const item = rawClips[i];
     let start = Math.max(0, Math.floor(Number(item.startTime) || 0));
-    let end = Math.floor(Number(item.endTime) || (start + 25));
+    let end = Math.floor(Number(item.endTime) || (start + desiredLen));
 
     if (end <= start) {
-      end = Math.min(duration, start + 25);
+      end = Math.min(duration, start + desiredLen);
+    }
+
+    // Align clip length to targetDuration within reason
+    const diff = end - start;
+    if (diff < Math.min(desiredLen * 0.7, 5) || diff > desiredLen * 1.3) {
+      end = Math.min(duration, start + desiredLen);
+      if (end - start < desiredLen && start > 0) {
+        start = Math.max(0, end - desiredLen);
+      }
     }
 
     if (start >= duration) continue;
-    if (end > duration) end = duration;
+    if (end > duration) {
+      end = duration;
+      start = Math.max(0, end - desiredLen);
+    }
 
     const clipDuration = end - start;
     if (clipDuration < 3) continue;
@@ -35,7 +48,7 @@ function sanitizeClips(rawClips, videoDuration, requestedCount, projectTitle = '
     validClips.push({
       startTime: start,
       endTime: end,
-      duration: end - start,
+      duration: clipDuration,
       title,
       description,
       score,
@@ -67,9 +80,17 @@ function sanitizeClips(rawClips, videoDuration, requestedCount, projectTitle = '
  * @param {number} options.duration - Video duration in seconds
  * @param {number} options.clipsCount - Requested number of clips
  * @param {string} options.videoPath - Absolute path to actual source video file on disk
+ * @param {number} options.targetDuration - Desired duration of each clip in seconds
  * @returns {Promise<Array>} List of clips with { startTime, endTime, title, description, score }
  */
-async function analyzeVideoMoments({ title, description = '', duration = 60, clipsCount = 5, videoPath = '' }) {
+async function analyzeVideoMoments({
+  title,
+  description = '',
+  duration = 60,
+  clipsCount = 5,
+  videoPath = '',
+  targetDuration = 30,
+}) {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   const modelName = process.env.GEMINI_MODEL?.trim() || 'gemini-1.5-flash';
 
@@ -77,10 +98,12 @@ async function analyzeVideoMoments({ title, description = '', duration = 60, cli
     throw new Error('Invalid source video duration for analysis.');
   }
 
+  const desiredClipSeconds = Math.min(Math.floor(duration), Math.max(3, Math.floor(targetDuration)));
+
   // If Gemini API Key is configured, attempt analysis via Gemini API
   if (apiKey) {
     try {
-      console.log(`[Gemini] Sending video metadata to Gemini (${modelName})...`);
+      console.log(`[Gemini] Sending video metadata to Gemini (${modelName}) with target duration ${desiredClipSeconds}s...`);
       const genAI = new GoogleGenerativeAI(apiKey);
       const model = genAI.getGenerativeModel({
         model: modelName,
@@ -98,18 +121,19 @@ VIDEO METADATA:
 - Title: "${title}"
 - Description/Context: "${description.slice(0, 1000)}"
 - Duration: ${Math.floor(duration)} seconds (${Math.floor(duration / 60)}m ${Math.floor(duration % 60)}s)
+- Target Clip Duration: Approximately ${desiredClipSeconds} seconds per clip
 
 RULES:
 1. Identify high-interest timestamps strictly between 0 and ${Math.floor(duration)} seconds.
-2. Clip duration must be between 10 and 60 seconds (or shorter if total video is under 60s).
+2. Clip duration (endTime - startTime) must match the requested target duration of ${desiredClipSeconds} seconds as closely as possible (between ${Math.max(3, desiredClipSeconds - 2)} and ${desiredClipSeconds + 2} seconds).
 3. Provide descriptive, contextual titles for each clip.
 4. Avoid overlapping timestamps.
 5. Return JSON ONLY in this format:
 {
   "clips": [
     {
-      "startTime": 5,
-      "endTime": 25,
+      "startTime": 0,
+      "endTime": ${desiredClipSeconds},
       "title": "Clear descriptive title",
       "description": "Why this moment is engaging",
       "score": 92
@@ -134,7 +158,7 @@ RULES:
 
       if (parsed) {
         const rawClips = parsed.clips || (Array.isArray(parsed) ? parsed : []);
-        const sanitized = sanitizeClips(rawClips, duration, clipsCount, title);
+        const sanitized = sanitizeClips(rawClips, duration, clipsCount, title, desiredClipSeconds);
         if (sanitized.length > 0) {
           console.log(`[Gemini] Successfully parsed ${sanitized.length} moments from Gemini.`);
           return sanitized;
@@ -149,15 +173,15 @@ RULES:
 
   // If Gemini was not configured or unreachable, analyze genuine scene cuts/timestamps of the actual video file
   if (videoPath) {
-    console.log('[VideoProcessor] Analyzing genuine scene/audio boundaries on source video file...');
-    const detected = await detectVideoMoments(videoPath, duration, clipsCount);
+    console.log(`[VideoProcessor] Analyzing genuine scene/audio boundaries on source video file (target: ${desiredClipSeconds}s)...`);
+    const detected = await detectVideoMoments(videoPath, duration, clipsCount, desiredClipSeconds);
     if (detected && detected.length > 0) {
       return detected.map((m, idx) => ({
         startTime: m.startTime,
         endTime: m.endTime,
         duration: m.duration,
         title: `${title} - Clip ${idx + 1}`,
-        description: `Highlight segment from ${m.startTime}s to ${m.endTime}s`,
+        description: `Highlight segment from ${m.startTime}s to ${m.endTime}s (${m.duration}s)`,
         score: m.score,
       }));
     }
